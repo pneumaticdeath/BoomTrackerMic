@@ -158,7 +158,7 @@ void loop() {
 
   Serial.print("Average sound level is ");
   Serial.println(bufferAverage());
-  
+
 #if defined(USE_DHT)
   Serial.print("DHT Temp: ");
   Serial.print(dht.readTemperature());
