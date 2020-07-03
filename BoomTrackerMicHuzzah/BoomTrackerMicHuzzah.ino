@@ -87,6 +87,14 @@ void setup() {
   WiFi.setPins(8,7,4,2);
 #endif
 
+  // Check for the presence of the shield.  Really only applies to
+  // Feather M0 boards, but will work for the Huzzah as well.
+  if (WiFi.status() == WL_NO_SHIELD) {
+    Serial.println("WiFi shield not present");
+    // don't continue:
+    while (true);
+  }
+
   Serial.print("Initializing WIFI to talk to SSID ");
   Serial.print(ssid);
   WiFi.begin(ssid, pass);
