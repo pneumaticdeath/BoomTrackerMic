@@ -1,3 +1,6 @@
+#define SERIAL_DEBUG
+#define MIC_ID "001"
+
 #if defined(ESP8266)
 # include <ESP8266TimerInterrupt.h>
 # include <ESP8266_ISR_Timer.h>
@@ -18,28 +21,27 @@
 #include <WiFiUdp.h>
 #include <BetterNTP.h>
 #include <time.h>
-
 #include "wifi_creds.h"
 const char ssid[] = WIFI_SSID;
 const char pass[] = WIFI_PASS;
 
-const char ntpServer[] = "192.168.86.8";
+IPAddress ntpServer = IPAddress(192, 168, 86, 9);
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, ntpServer);
 volatile time_t epochTime = 0;
 volatile uint32_t epochMicros = 0;
 
 #if defined(ESP8266)
- // Init ESP8266 timer 0
- ESP8266Timer ITimer;
+// Init ESP8266 timer 0
+ESP8266Timer ITimer;
 # define CLOCK_RATE 10000
 #else
- const uint8_t clockPin = 10; // the pin receiving the clockSignal.
+const uint8_t clockPin = 10; // the pin receiving the clockSignal.
 # define CLOCK_RATE 8192
 RTC_DS3231 rtc;
 #endif
 
-const float microsPerClockCycle = 1000000.0/CLOCK_RATE;
+const float microsPerClockCycle = 1000000.0 / CLOCK_RATE;
 volatile uint8_t ticker_ticked = 0;  // increases 1 per clock cycle, needs to be reset manually
 volatile uint16_t ticker = 0;  // increases 1 per clock cycle, rolls over every second.
 volatile bool ticker_rollover = false;  // has the second rollover happened? reset manually
@@ -54,11 +56,17 @@ volatile bool ticker_rollover = false;  // has the second rollover happened? res
 uint8_t missed = 0;  // count of how many readings got skipped.
 uint16_t read_buf[READ_BUF_SIZE];
 uint8_t read_buf_index = 0;
+uint32_t read_bufStartEpoch = 0;
+uint32_t read_bufStartMicros = 0;
+IPAddress micServerIP = IPAddress(192, 168, 86, 9);
+#define MIC_UDP_PORT 19086
+WiFiUDP micServerUDP;
+bool needReinit = true;
 
 #if defined(USE_DHT)
 # define DHTPIN 5
- DHT dht(DHTPIN, DHT11);
-#endif 
+DHT dht(DHTPIN, DHT11);
+#endif
 
 #if !defined(ESP8266)
 # define ICACHE_RAM_ATTR
@@ -74,6 +82,16 @@ void  ICACHE_RAM_ATTR clock_tick() {
   }
 }
 
+bool errorFlag = false;
+#define ERROR_LED_PIN 13
+
+void LOG_ERROR(const char *message) {
+#if defined(SERIAL_DEBUG)
+  Serial.println(message);
+#endif
+  errorFlag = true;
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -84,7 +102,11 @@ void setup() {
 
 #if !defined(ESP8266)
   //Configure pins for Adafruit ATWINC1500 Feather
-  WiFi.setPins(8,7,4,2);
+  WiFi.setPins(8, 7, 4, 2);
+#endif
+
+#if defined(SERIAL_DEBUG)
+  while (!Serial);
 #endif
 
   // Check for the presence of the shield.  Really only applies to
@@ -101,6 +123,7 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(1000);
+    WiFi.begin(ssid, pass);
   }
   Serial.println("!");
 
@@ -113,38 +136,55 @@ void setup() {
 
   // Start NTP client
   timeClient.begin();
-  
+
 #if defined(USE_RTC)
   if (! rtc.begin()) {
     Serial.println("Can't find RTC");
     Serial.flush();
     abort();
   }
-  
+
   // If the RTC isn't initialized or has lost power, we need to initialize it.
   // Replace this with NTP code once we've got it working.
   if (rtc.lostPower()) {
     // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     initializeRtcFromNtp();
   }
- 
+
   pinMode(clockPin, INPUT_PULLUP);
   rtc.writeSqwPinMode(DS3231_SquareWave8kHz);
   attachInterrupt(digitalPinToInterrupt(clockPin), clock_tick, FALLING);
 #endif
 
+  pinMode(MICPIN, INPUT);
+
   setClockFromNTP();
+
+  micServerUDP.begin(MIC_UDP_PORT);
+  registerMicServer();
 }
 
 void loop() {
   while (!ticker_rollover) {
     while (ticker_ticked == 0) delayMicroseconds(10);
-    if (ticker_ticked > 1) missed += ticker_ticked - 1;
+    if (ticker_ticked > 1) {
+      missed += ticker_ticked - 1;
+      for (uint8_t i = 1; i < ticker_ticked; i++) {
+        read_buf[read_buf_index] = 0;
+        read_buf_index = (read_buf_index + 1) % READ_BUF_SIZE;
+        if (read_buf_index == 0) {
+          sendBuffer();
+        }
+      }
+    }
     ticker_ticked = 0; // reset ticker counter;
     // take measurement
     uint16_t reading = analogRead(MICPIN);
     read_buf[read_buf_index] = reading;
     read_buf_index = (read_buf_index + 1) % READ_BUF_SIZE;
+    if (read_buf_index == 0) {
+      sendBuffer();
+    }
   }
   ticker_rollover = false; // reset rollover flag
   // put your main code here, to run repeatedly:
@@ -176,6 +216,14 @@ void loop() {
   Serial.print("At ");
   time_t t = epochTime; // Copying because you can't cast from a volatile to a const
   Serial.println(asctime(gmtime(&t)));
+
+  if (errorFlag && epochTime % 2) {
+    digitalWrite(ERROR_LED_PIN, HIGH);
+  } else {
+    digitalWrite(ERROR_LED_PIN, LOW);
+  }
+
+  if (needReinit) registerMicServer();
 }
 
 #if defined(USE_RTC)
@@ -188,28 +236,94 @@ void initializeRtcFromNtp() {
   unsigned long epochMicros = timeClient.getEpochMicros();
   // Set up ticker so it rolls over at the top of the second.
   // Do this before we call rtc.adjust(...) because that could take a while.
-  ticker = (uint16_t) epochMicros/microsPerClockCycle;
-  
+  ticker = (uint16_t) epochMicros / microsPerClockCycle;
+
   const time_t t = epochTime;
   struct tm *now = gmtime(&t);
 
-  rtc.adjust(DateTime(now->tm_year+1900, now->tm_mon+1, now->tm_mday, now->tm_hour, now->tm_min, now->tm_sec));
+  rtc.adjust(DateTime(now->tm_year + 1900, now->tm_mon + 1, now->tm_mday, now->tm_hour, now->tm_min, now->tm_sec));
 }
 #endif
 
 uint16_t bufferAverage() {
   uint32_t sum = 0;
   for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
-    sum += read_buf[i]; 
+    sum += read_buf[i];
   }
   return (uint16_t) (sum / READ_BUF_SIZE);
+}
+
+void sendBuffer() {
+  int rc;
+  rc = micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT);
+  if (rc == 0) {
+    LOG_ERROR("UNABLE TO ALLOCATE PACKET for sendBuffer()");
+    return;
+  }
+  if (micServerUDP.write('M') != 1) LOG_ERROR("Unable to write cmd");
+  if (micServerUDP.write(MIC_ID, 3) != 3) LOG_ERROR("Unable to write id");
+  if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
+  if (writeTimeInfo(micServerUDP, read_bufStartEpoch, read_bufStartMicros) != 8) LOG_ERROR("Unable to write start_time");
+  uint16_t microsPerCycle = (uint16_t) microsPerClockCycle;
+  if (micServerUDP.write((const uint8_t*) &microsPerCycle, sizeof(microsPerCycle)) != sizeof(microsPerCycle)) LOG_ERROR("Unable to write cycle micros");
+  for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
+    if (micServerUDP.write((const uint8_t*) &read_buf[i], sizeof(uint16_t)) != sizeof(uint16_t)) LOG_ERROR("Unable to write data");
+  }
+  if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
+  // Now reset the buffer times
+  read_bufStartEpoch = timeClient.getEpochTime();
+  read_bufStartMicros = timeClient.getEpochMicros();
+
+  readMicServerResponse();
+}
+
+size_t writeTimeInfo(WiFiUDP &udp, uint32_t epoch, uint32_t epoch_micros) {
+  size_t bytes_written = 0;
+  bytes_written += udp.write((const uint8_t *) &epoch, sizeof(epoch));
+  bytes_written += udp.write((const uint8_t *) &epoch_micros, sizeof(epoch_micros));
+  return bytes_written;
+}
+
+void readMicServerResponse() {
+  if (micServerUDP.parsePacket()) {
+    unsigned char response[3];
+    if (micServerUDP.read(response, 2) != 2) {
+      LOG_ERROR("Unable to read response packet");
+      return;
+    }
+    response[2] = 0; // Null terminate the string for parsing
+    if (response[0] == 'E' && response[1] == 'R') {
+      LOG_ERROR("Got Error code from server");
+    } else if (response[0] == 'R' && response[1] == 'I') {
+      needReinit = true;
+    } else if (response[0] == 'O' && response[1] == 'K') {
+      // don't need to do anything for okay
+    } else {
+      LOG_ERROR("Got unknown response code from server");
+      Serial.println((const char *) response);
+    }
+  }
+}
+
+void registerMicServer() {
+  int rc;
+  rc = micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT);
+  if (rc == 0) {
+    LOG_ERROR("UNABLE TO ALLOCATE PACKET for sendBuffer()");
+    return;
+  }
+  if (micServerUDP.write('R') != 1) LOG_ERROR("Unable to write cmd");
+  if (micServerUDP.write(MIC_ID, 3) != 3) LOG_ERROR("Unable to write id");
+  if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
+  if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
+  needReinit = false;
 }
 
 void setClockFromNTP() {
   timeClient.update() || Serial.println('Failed to update NTP client');
   epochTime = timeClient.getEpochTime();
   epochMicros = timeClient.getEpochMicros();
-  ticker = (uint16_t) epochMicros/microsPerClockCycle;
+  ticker = (uint16_t) epochMicros / microsPerClockCycle;
   Serial.print("It's ");
   Serial.print(epochMicros);
   Serial.print(" microseconds past epoch time of ");
