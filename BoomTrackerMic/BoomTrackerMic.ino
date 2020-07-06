@@ -315,6 +315,15 @@ void registerMicServer() {
   if (micServerUDP.write('R') != 1) LOG_ERROR("Unable to write cmd");
   if (micServerUDP.write(MIC_ID, 3) != 3) LOG_ERROR("Unable to write id");
   if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
+  uint16_t temp;
+#if defined(USE_DHT)
+  temp = (uint16_t) ((dht.getTemperature() + 273.15)*10);
+#elif defined(USE_RTC)
+  temp = (uint16_t) ((rtc.getTemperature() + 273.15)*10);
+#else 
+  temp = 2981; // 298.1 K is 25 C.. which is a reasonable default
+#endif
+  if (micServerUDP.write((const uint8_t *) &temp, sizeof(temp)) != sizeof(temp)) LOG_ERROR("Unable to write temp"); 
   if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
   needReinit = false;
 }
