@@ -196,6 +196,8 @@ void loop() {
     missed = 0;
   }
 
+  readMicServerResponse();
+
   Serial.print("Average sound level is ");
   Serial.println(bufferAverage());
 
