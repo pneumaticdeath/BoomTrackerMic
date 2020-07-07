@@ -21,6 +21,8 @@
 
 #include "BetterNTP.h"
 
+// #define DEBUG_NTPClient
+
 NTPClient::NTPClient(UDP& udp) {
   this->_udp            = &udp;
 }
@@ -149,9 +151,10 @@ unsigned long NTPClient::getEpochTime() {
     deltaMicros +=  nowMicros - this->_lastUpdate;
   }
   this->_microsAtLastEpochFetch = deltaMicros % 1000000;
-  return this->_timeOffset + // User offset
+  unsigned long returnVal = this->_timeOffset + // User offset
          this->_currentEpoc + // Epoch returned by the NTP server
-         (deltaMicros / 1000000L); // Time since last update
+         (deltaMicros / 1000000UL); // Time since last update
+  return returnVal;
 }
 
 unsigned long NTPClient::getEpochMicros() {

@@ -1,7 +1,7 @@
 #define SERIAL_DEBUG
 #ifndef ESP8266
 #define MIC_ID "001"
-#else 
+#else
 #define MIC_ID "002"
 #endif
 
@@ -32,7 +32,8 @@
 const char ssid[] = WIFI_SSID;
 const char pass[] = WIFI_PASS;
 
-IPAddress ntpServer = IPAddress(192, 168, 86, 9);
+//IPAddress ntpServer = IPAddress(192, 168, 86, 9);  // DON'T DO THIS... it causes NTPClient to do very strange things
+const char *ntpServer = "192.168.86.9";
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, ntpServer);
 volatile time_t epochTime = 0;
@@ -41,7 +42,7 @@ volatile uint32_t epochMicros = 0;
 #if defined(ESP8266)
 // Init ESP8266 timer 0
 ESP8266Timer ITimer;
-# define CLOCK_RATE 100
+# define CLOCK_RATE 1000
 #else
 const uint8_t clockPin = 10; // the pin receiving the clockSignal.
 # define CLOCK_RATE 8192
@@ -125,7 +126,7 @@ void setup() {
 
 #if defined(ESP8266)
   WiFi.mode(WIFI_STA);
-#endif  
+#endif
   Serial.print("Initializing WIFI to talk to SSID ");
   Serial.print(ssid);
   WiFi.begin(ssid, pass);
@@ -138,7 +139,7 @@ void setup() {
 
   Serial.print("Received IP: ");
   Serial.println(WiFi.localIP());
-  
+
 #if defined(ESP8266)
   if (ITimer.attachInterruptInterval((uint32_t) microsPerClockCycle, clock_tick))
     Serial.println("Starting  ITimer OK, millis() = " + String(millis()));
@@ -159,8 +160,8 @@ void setup() {
   // If the RTC isn't initialized or has lost power, we need to initialize it.
   // Replace this with NTP code once we've got it working.
   //if (rtc.lostPower()) {
-    // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    //initializeRtcFromNtp();
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  //initializeRtcFromNtp();
   //}
   initializeRtcFromNtp();
 
@@ -169,8 +170,10 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(clockPin), clock_tick, FALLING);
 #endif
 
+#ifndef ESP8266
   analogReadResolution(12);
-  
+#endif
+
   //pinMode(MICPIN, INPUT);
   pinMode(ERROR_LED_PIN, OUTPUT);
 
@@ -205,6 +208,7 @@ void loop() {
   ticker_rollover = false; // reset rollover flag
   // put your main code here, to run repeatedly:
 
+  timeClient.update();
   if (missed > 0) {
     Serial.print("!!!Missed ");
     Serial.print(missed);
@@ -269,19 +273,29 @@ void initializeRtcFromNtp() {
 
 float bufferAverage() {
   float sum = 0.0;
+  uint16_t count = 0;
   for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
-    sum += read_buf[i];
+    if (read_buf[i] > 0) { // don't average missing values
+      sum += read_buf[i];
+      count++;
+    }
   }
-  return sum / READ_BUF_SIZE;
+  if (count > 0) return sum / count;
+  else return -1.0;
 }
 
 float bufferRMS() {
   float avg = (float) bufferAverage();
   float sum_sq = 0.0;
+  uint16_t count = 0;
   for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
-    sum_sq += sq(((float) read_buf[i])- avg);
+    if (read_buf[i] > 0) {
+      sum_sq += sq(((float) read_buf[i]) - avg);
+      count++;
+    }
   }
-  return sqrt(sum_sq/READ_BUF_SIZE);
+  if (count > 0) return sqrt(sum_sq / count);
+  else return -1.0;
 }
 
 void sendBuffer() {
@@ -353,15 +367,15 @@ void registerMicServer() {
   if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
   uint16_t temp;
 #if defined(USE_DHT)
-  temp = (uint16_t) ((dht.readTemperature() + 273.15)*10);
+  temp = (uint16_t) ((dht.readTemperature() + 273.15) * 10);
 #elif defined(USE_RTC)
-  temp = (uint16_t) ((rtc.getTemperature() + 273.15)*10);
-#else 
+  temp = (uint16_t) ((rtc.getTemperature() + 273.15) * 10);
+#else
   temp = 2981; // 298.1 K is 25 C.. which is a reasonable default
 #endif
-  if (micServerUDP.write((const uint8_t *) &temp, sizeof(temp)) != sizeof(temp)) LOG_ERROR("Unable to write temp"); 
+  if (micServerUDP.write((const uint8_t *) &temp, sizeof(temp)) != sizeof(temp)) LOG_ERROR("Unable to write temp");
   if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
-  
+
 #if defined(ESP8266)
   yield(); // give the chip time to send the packet
 #endif
