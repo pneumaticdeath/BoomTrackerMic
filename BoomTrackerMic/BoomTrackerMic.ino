@@ -252,10 +252,8 @@ void loop() {
 
 #if defined(USE_RTC)
 void initializeRtcFromNtp() {
-  while (!timeClient.update()) {
-    delay(500);
-    timeClient.forceUpdate();
-  }
+  timeClient.update();
+
   epochTime = timeClient.getEpochTime();
   unsigned long epochMicros = timeClient.getEpochMicros();
   // Set up ticker so it rolls over at the top of the second.
