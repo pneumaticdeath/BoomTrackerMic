@@ -1,25 +1,32 @@
 #define SERIAL_DEBUG
+#ifndef ESP8266
 #define MIC_ID "001"
+#else 
+#define MIC_ID "002"
+#endif
 
 #if defined(ESP8266)
 # include <ESP8266TimerInterrupt.h>
 # include <ESP8266_ISR_Timer.h>
 # include <ESP8266_ISR_Timer-Impl.h>
 
-# include <DHT.h>
-# include <DHT_U.h>
 
-# define USE_DHT 1
+#define ERROR_LED_PIN 0
+//# define USE_DHT 1
+//# include <DHT.h>
+//# include <DHT_U.h>
+
 # include <ESP8266WiFi.h>
 #else // assume Feather M0 WiFi
 # include <SPI.h>
 # include <WiFi101.h>
 # include "RTClib.h"
 # define USE_RTC 1
+#define ERROR_LED_PIN 13
 #endif
 
 #include <WiFiUdp.h>
-#include <BetterNTP.h>
+#include "BetterNTP.h"
 #include <time.h>
 #include "wifi_creds.h"
 const char ssid[] = WIFI_SSID;
@@ -34,7 +41,7 @@ volatile uint32_t epochMicros = 0;
 #if defined(ESP8266)
 // Init ESP8266 timer 0
 ESP8266Timer ITimer;
-# define CLOCK_RATE 10000
+# define CLOCK_RATE 100
 #else
 const uint8_t clockPin = 10; // the pin receiving the clockSignal.
 # define CLOCK_RATE 8192
@@ -52,7 +59,7 @@ volatile bool ticker_rollover = false;  // has the second rollover happened? res
 # define MICPIN A2
 #endif
 
-#define READ_BUF_SIZE 200
+#define READ_BUF_SIZE 100
 uint8_t missed = 0;  // count of how many readings got skipped.
 uint16_t read_buf[READ_BUF_SIZE];
 uint8_t read_buf_index = 0;
@@ -83,7 +90,6 @@ void  ICACHE_RAM_ATTR clock_tick() {
 }
 
 bool errorFlag = false;
-#define ERROR_LED_PIN 13
 
 void LOG_ERROR(const char *message) {
 #if defined(SERIAL_DEBUG)
@@ -95,6 +101,10 @@ void LOG_ERROR(const char *message) {
 void setup() {
   Serial.begin(115200);
 
+#if defined(SERIAL_DEBUG)
+  while (!Serial);
+#endif
+
 #if defined(USE_DHT)
   Serial.println("Initializing temp sensor");
   dht.begin();
@@ -105,10 +115,6 @@ void setup() {
   WiFi.setPins(8, 7, 4, 2);
 #endif
 
-#if defined(SERIAL_DEBUG)
-  while (!Serial);
-#endif
-
   // Check for the presence of the shield.  Really only applies to
   // Feather M0 boards, but will work for the Huzzah as well.
   if (WiFi.status() == WL_NO_SHIELD) {
@@ -117,16 +123,22 @@ void setup() {
     while (true);
   }
 
+#if defined(ESP8266)
+  WiFi.mode(WIFI_STA);
+#endif  
   Serial.print("Initializing WIFI to talk to SSID ");
   Serial.print(ssid);
   WiFi.begin(ssid, pass);
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(1000);
-    WiFi.begin(ssid, pass);
+    //WiFi.begin(ssid, pass);
   }
   Serial.println("!");
 
+  Serial.print("Received IP: ");
+  Serial.println(WiFi.localIP());
+  
 #if defined(ESP8266)
   if (ITimer.attachInterruptInterval((uint32_t) microsPerClockCycle, clock_tick))
     Serial.println("Starting  ITimer OK, millis() = " + String(millis()));
@@ -146,17 +158,21 @@ void setup() {
 
   // If the RTC isn't initialized or has lost power, we need to initialize it.
   // Replace this with NTP code once we've got it working.
-  if (rtc.lostPower()) {
+  //if (rtc.lostPower()) {
     // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    initializeRtcFromNtp();
-  }
+    //initializeRtcFromNtp();
+  //}
+  initializeRtcFromNtp();
 
   pinMode(clockPin, INPUT_PULLUP);
   rtc.writeSqwPinMode(DS3231_SquareWave8kHz);
   attachInterrupt(digitalPinToInterrupt(clockPin), clock_tick, FALLING);
 #endif
 
-  pinMode(MICPIN, INPUT);
+  analogReadResolution(12);
+  
+  //pinMode(MICPIN, INPUT);
+  pinMode(ERROR_LED_PIN, OUTPUT);
 
   setClockFromNTP();
 
@@ -200,6 +216,8 @@ void loop() {
 
   Serial.print("Average sound level is ");
   Serial.println(bufferAverage());
+  Serial.print("RMS of sound level is ");
+  Serial.println(bufferRMS());
 
 #if defined(USE_DHT)
   Serial.print("DHT Temp: ");
@@ -238,21 +256,32 @@ void initializeRtcFromNtp() {
   unsigned long epochMicros = timeClient.getEpochMicros();
   // Set up ticker so it rolls over at the top of the second.
   // Do this before we call rtc.adjust(...) because that could take a while.
-  ticker = (uint16_t) epochMicros / microsPerClockCycle;
+  ticker = (uint16_t) (epochMicros / microsPerClockCycle);
 
   const time_t t = epochTime;
   struct tm *now = gmtime(&t);
 
+  Serial.print("Initializing RTC with time ");
+  Serial.print(asctime(now));
   rtc.adjust(DateTime(now->tm_year + 1900, now->tm_mon + 1, now->tm_mday, now->tm_hour, now->tm_min, now->tm_sec));
 }
 #endif
 
-uint16_t bufferAverage() {
-  uint32_t sum = 0;
+float bufferAverage() {
+  float sum = 0.0;
   for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
     sum += read_buf[i];
   }
-  return (uint16_t) (sum / READ_BUF_SIZE);
+  return sum / READ_BUF_SIZE;
+}
+
+float bufferRMS() {
+  float avg = (float) bufferAverage();
+  float sum_sq = 0.0;
+  for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
+    sum_sq += sq(((float) read_buf[i])- avg);
+  }
+  return sqrt(sum_sq/READ_BUF_SIZE);
 }
 
 void sendBuffer() {
@@ -271,7 +300,12 @@ void sendBuffer() {
   for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
     if (micServerUDP.write((const uint8_t*) &read_buf[i], sizeof(uint16_t)) != sizeof(uint16_t)) LOG_ERROR("Unable to write data");
   }
-  if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
+  if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send measurement packet");
+
+#if defined(ESP8266)
+  yield(); // give the chip time to send the packet
+#endif
+
   // Now reset the buffer times
   read_bufStartEpoch = timeClient.getEpochTime();
   read_bufStartMicros = timeClient.getEpochMicros();
@@ -319,7 +353,7 @@ void registerMicServer() {
   if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
   uint16_t temp;
 #if defined(USE_DHT)
-  temp = (uint16_t) ((dht.getTemperature() + 273.15)*10);
+  temp = (uint16_t) ((dht.readTemperature() + 273.15)*10);
 #elif defined(USE_RTC)
   temp = (uint16_t) ((rtc.getTemperature() + 273.15)*10);
 #else 
@@ -327,6 +361,11 @@ void registerMicServer() {
 #endif
   if (micServerUDP.write((const uint8_t *) &temp, sizeof(temp)) != sizeof(temp)) LOG_ERROR("Unable to write temp"); 
   if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
+  
+#if defined(ESP8266)
+  yield(); // give the chip time to send the packet
+#endif
+
   needReinit = false;
 }
 
