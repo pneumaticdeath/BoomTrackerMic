@@ -60,7 +60,7 @@ volatile bool ticker_rollover = false;  // has the second rollover happened? res
 # define MICPIN A2
 #endif
 
-#define READ_BUF_SIZE 100
+#define READ_BUF_SIZE 200
 uint8_t missed = 0;  // count of how many readings got skipped.
 uint16_t read_buf[READ_BUF_SIZE];
 uint8_t read_buf_index = 0;
@@ -99,6 +99,25 @@ void LOG_ERROR(const char *message) {
   errorFlag = true;
 }
 
+void LOG(const char *message) {
+#if defined(SERIAL_DEBUG)
+  Serial.println(message);
+#endif
+  if (micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT) == 0) {
+    LOG_ERROR("Can't start log message");
+    return;
+  }
+  if (!micServerUDP.write('L')) LOG_ERROR("Unable to write to log message");
+  if (micServerUDP.write(MIC_ID, (size_t) 3) != 3) LOG_ERROR("Unable to log Mic ID");
+  if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to log timestamp");
+  size_t len = strlen(message);
+  if (micServerUDP.write(message, len) != len) LOG_ERROR("Unable to log message");
+  if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send log message");
+#if defined(ESP8266)
+  yield();
+#endif
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -119,7 +138,7 @@ void setup() {
   // Check for the presence of the shield.  Really only applies to
   // Feather M0 boards, but will work for the Huzzah as well.
   if (WiFi.status() == WL_NO_SHIELD) {
-    Serial.println("WiFi shield not present");
+    LOG_ERROR("WiFi shield not present");
     // don't continue:
     while (true);
   }
@@ -152,7 +171,7 @@ void setup() {
 
 #if defined(USE_RTC)
   if (! rtc.begin()) {
-    Serial.println("Can't find RTC");
+    LOG("Can't find RTC");
     Serial.flush();
     abort();
   }
@@ -181,6 +200,7 @@ void setup() {
 
   micServerUDP.begin(MIC_UDP_PORT);
   registerMicServer();
+  LOG("Starting up");
 }
 
 void loop() {
@@ -239,7 +259,7 @@ void loop() {
 
   Serial.print("At ");
   time_t t = epochTime; // Copying because you can't cast from a volatile to a const
-  Serial.println(asctime(gmtime(&t)));
+  Serial.print(asctime(gmtime(&t)));
 
   if (errorFlag && epochTime % 2) {
     digitalWrite(ERROR_LED_PIN, HIGH);
@@ -378,6 +398,7 @@ void registerMicServer() {
   yield(); // give the chip time to send the packet
 #endif
 
+  LOG("Reinit finished");
   needReinit = false;
 }
 
