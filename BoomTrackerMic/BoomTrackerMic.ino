@@ -15,14 +15,16 @@
 //# define USE_DHT 1
 //# include <DHT.h>
 //# include <DHT_U.h>
-
 # include <ESP8266WiFi.h>
+
 #else // assume Feather M0 WiFi
+
 # include <SPI.h>
 # include <WiFi101.h>
 # include "RTClib.h"
 # define USE_RTC 1
 #define ERROR_LED_PIN 13
+
 #endif
 
 #include <WiFiUdp.h>
@@ -42,7 +44,7 @@ volatile uint32_t epochMicros = 0;
 #if defined(ESP8266)
 // Init ESP8266 timer 0
 ESP8266Timer ITimer;
-# define CLOCK_RATE 1000
+# define CLOCK_RATE 100
 #else
 const uint8_t clockPin = 10; // the pin receiving the clockSignal.
 # define CLOCK_RATE 8192
@@ -70,6 +72,11 @@ IPAddress micServerIP = IPAddress(192, 168, 86, 9);
 #define MIC_UDP_PORT 19086
 WiFiUDP micServerUDP;
 bool needReinit = true;
+#if defined(ESP8266)
+ float running_avg = 350.0; // 1024 full scale, and average voltage from mic is 0.35v out of 1v
+#else
+ float running_avg = 2048.0; //4096 full scale and average mic voltage is 1.65v out of 3.3v 
+#endif 
 
 #if defined(USE_DHT)
 # define DHTPIN 5
@@ -93,9 +100,9 @@ void  ICACHE_RAM_ATTR clock_tick() {
 bool errorFlag = false;
 
 void LOG_ERROR(const char *message) {
-#if defined(SERIAL_DEBUG)
-  Serial.println(message);
-#endif
+  String errmsg = "ERROR ";
+  errmsg += message;
+  LOG(errmsg.c_str());
   errorFlag = true;
 }
 
@@ -104,15 +111,15 @@ void LOG(const char *message) {
   Serial.println(message);
 #endif
   if (micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT) == 0) {
-    LOG_ERROR("Can't start log message");
+    Serial.println("Unable to start log packet");
     return;
   }
-  if (!micServerUDP.write('L')) LOG_ERROR("Unable to write to log message");
-  if (micServerUDP.write(MIC_ID, (size_t) 3) != 3) LOG_ERROR("Unable to log Mic ID");
-  if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to log timestamp");
+  micServerUDP.write('L');
+  micServerUDP.write(MIC_ID, (size_t) 3);
+  writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros());
   size_t len = strlen(message);
-  if (micServerUDP.write(message, len) != len) LOG_ERROR("Unable to log message");
-  if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send log message");
+  micServerUDP.write(message, len);
+  if (micServerUDP.endPacket() == 0) Serial.println("Unable to send log message");
 #if defined(ESP8266)
   yield();
 #endif
@@ -200,10 +207,11 @@ void setup() {
 
   micServerUDP.begin(MIC_UDP_PORT);
   registerMicServer();
-  LOG("Starting up");
+  LOG(String("Starting up").c_str());
 }
 
 void loop() {
+  String msg;
   while (!ticker_rollover) {
     while (ticker_ticked == 0) delayMicroseconds(10);
     if (ticker_ticked > 1) {
@@ -230,31 +238,38 @@ void loop() {
 
   timeClient.update();
   if (missed > 0) {
-    Serial.print("!!!Missed ");
-    Serial.print(missed);
-    Serial.println(" read cycles!!!");
+    msg = "!!!Missed ";
+    msg += missed;
+    msg += " read cycles out of ";
+    msg += CLOCK_RATE;
+    msg += " !!!";
+    LOG(msg.c_str());
     missed = 0;
   }
 
   readMicServerResponse();
 
-  Serial.print("Average sound level is ");
-  Serial.println(bufferAverage());
-  Serial.print("RMS of sound level is ");
-  Serial.println(bufferRMS());
+  msg = "Running average sound level is ";
+  msg += running_avg;
+  LOG(msg.c_str());
+  msg = "RMS of sound level is ";
+  msg += bufferRMS();
+  LOG(msg.c_str());
 
 #if defined(USE_DHT)
-  Serial.print("DHT Temp: ");
-  Serial.print(dht.readTemperature());
-  Serial.print("C Humidity: ");
-  Serial.print(dht.readHumidity());
-  Serial.println("%");
+  msg = "DHT Temp: ";
+  msg += dht.readTemperature();
+  msg += "C Humidity: ");
+  msg += dht.readHumidity();
+  msg += "%";
+  LOG(msg.c_str());
 #endif
 
 #if defined(USE_RTC)
-  Serial.print("Temperature is ");
-  Serial.print(rtc.getTemperature());
-  Serial.println(" C");
+  msg = "Temperature is ";
+  msg += rtc.getTemperature();
+  msg += " C";
+  LOG(msg.c_str());
 #endif
 
   Serial.print("At ");
@@ -262,7 +277,7 @@ void loop() {
   Serial.print(asctime(gmtime(&t)));
 
   if (errorFlag && epochTime % 2) {
-    digitalWrite(ERROR_LED_PIN, HIGH);
+  digitalWrite(ERROR_LED_PIN, HIGH);
   } else {
     digitalWrite(ERROR_LED_PIN, LOW);
   }
@@ -303,12 +318,11 @@ float bufferAverage() {
 }
 
 float bufferRMS() {
-  float avg = (float) bufferAverage();
   float sum_sq = 0.0;
   uint16_t count = 0;
   for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
     if (read_buf[i] > 0) {
-      sum_sq += sq(((float) read_buf[i]) - avg);
+      sum_sq += sq(((float) read_buf[i]) - running_avg);
       count++;
     }
   }
@@ -318,22 +332,22 @@ float bufferRMS() {
 
 void sendBuffer() {
   int rc;
+  String msg_status;
   rc = micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT);
   if (rc == 0) {
-    LOG_ERROR("UNABLE TO ALLOCATE PACKET for sendBuffer()");
-    return;
+    msg_status += "UNABLE TO ALLOCATE PACKET for sendBuffer()! ";
+  } else {
+    if (micServerUDP.write('M') != 1) msg_status += "Unable to write cmd! ";
+    if (micServerUDP.write(MIC_ID, 3) != 3) msg_status += "Unable to write id! ";
+    if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) msg_status += "Unable to write time! ";
+    if (writeTimeInfo(micServerUDP, read_bufStartEpoch, read_bufStartMicros) != 8) msg_status += "Unable to write start_time! ";
+    uint16_t microsPerCycle = (uint16_t) microsPerClockCycle;
+    if (micServerUDP.write((const uint8_t*) &microsPerCycle, sizeof(microsPerCycle)) != sizeof(microsPerCycle)) msg_status += "Unable to write cycle micros! ";
+    for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
+      if (micServerUDP.write((const uint8_t*) &read_buf[i], sizeof(uint16_t)) != sizeof(uint16_t)) msg_status += "Unable to write data! ";
+    }
+    if (micServerUDP.endPacket() == 0) msg_status += "Unable to send measurement packet! ";
   }
-  if (micServerUDP.write('M') != 1) LOG_ERROR("Unable to write cmd");
-  if (micServerUDP.write(MIC_ID, 3) != 3) LOG_ERROR("Unable to write id");
-  if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
-  if (writeTimeInfo(micServerUDP, read_bufStartEpoch, read_bufStartMicros) != 8) LOG_ERROR("Unable to write start_time");
-  uint16_t microsPerCycle = (uint16_t) microsPerClockCycle;
-  if (micServerUDP.write((const uint8_t*) &microsPerCycle, sizeof(microsPerCycle)) != sizeof(microsPerCycle)) LOG_ERROR("Unable to write cycle micros");
-  for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
-    if (micServerUDP.write((const uint8_t*) &read_buf[i], sizeof(uint16_t)) != sizeof(uint16_t)) LOG_ERROR("Unable to write data");
-  }
-  if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send measurement packet");
-
 #if defined(ESP8266)
   yield(); // give the chip time to send the packet
 #endif
@@ -342,7 +356,9 @@ void sendBuffer() {
   read_bufStartEpoch = timeClient.getEpochTime();
   read_bufStartMicros = timeClient.getEpochMicros();
 
+  running_avg = (9*running_avg + bufferAverage())/10.0;
   readMicServerResponse();
+  if (msg_status.length() != 0) LOG_ERROR(msg_status.c_str());
 }
 
 size_t writeTimeInfo(WiFiUDP &udp, uint32_t epoch, uint32_t epoch_micros) {
@@ -403,12 +419,13 @@ void registerMicServer() {
 }
 
 void setClockFromNTP() {
-  timeClient.update() || Serial.println('Failed to update NTP client');
+  if (!timeClient.update()) LOG_ERROR("Failed to update NTP client");
   epochTime = timeClient.getEpochTime();
   epochMicros = timeClient.getEpochMicros();
   ticker = (uint16_t) epochMicros / microsPerClockCycle;
-  Serial.print("It's ");
-  Serial.print(epochMicros);
-  Serial.print(" microseconds past epoch time of ");
-  Serial.println((unsigned long) epochTime);
+  String msg = "Initializing clock.  It's ";
+  msg += epochMicros;
+  msg += " microseconds past epoch time of ";
+  msg += (unsigned long) epochTime;
+  LOG(msg.c_str());
 }
