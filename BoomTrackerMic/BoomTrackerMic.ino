@@ -1,4 +1,5 @@
 #define SERIAL_DEBUG
+//#define READ_IN_ISR
 #ifndef ESP8266
 #define MIC_ID "001"
 #else
@@ -109,7 +110,9 @@ void  ICACHE_RAM_ATTR clock_tick() {
   }
   if (start_reading) {
     //Serial.println(reading);
+#if defined(READ_IN_ISR) 
     reading = analogRead(MICPIN);
+#endif 
     read_bufs[which_buf][read_buf_index] = reading;
     if (reading > 0) {
       if (abs(reading - running_avg) > trigger_threshold) {
@@ -250,7 +253,11 @@ void loop() {
   String msg;
   while (!ticker_rollover) {
     while (ticker_ticked == 0) {
+#if !defined(READ_IN_ISR)
+      reading = analogRead(MICPIN);
+#else
       delayMicroseconds(10);
+#endif
     }
     ticker_ticked = 0;
     if (send_now) {
@@ -274,7 +281,9 @@ void loop() {
 
   msg = "Missed ";
   msg += missed;
-  msg += " readings";
+  msg += " readings (";
+  msg += 100*missed/CLOCK_RATE;
+  msg += "%)";
   LOG(msg.c_str());
   missed = 0;
 
