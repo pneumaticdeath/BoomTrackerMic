@@ -56,6 +56,7 @@ const float microsPerClockCycle = 1000000.0 / CLOCK_RATE;
 volatile uint8_t ticker_ticked = 0;  // increases 1 per clock cycle, needs to be reset manually
 volatile uint16_t ticker = 0;  // increases 1 per clock cycle, rolls over every second.
 volatile bool ticker_rollover = false;  // has the second rollover happened? reset manually
+uint16_t updateCounter = 0;
 
 #if defined(ESP8266)
 # define MICPIN A0
@@ -268,7 +269,10 @@ void loop() {
   ticker_rollover = false; // reset rollover flag
   // put your main code here, to run repeatedly:
 
-  refreshNTP();
+  if (++updateCounter >= 10) {
+    refreshNTP();
+    updateCounter = 0;
+  }
 
   if (buffers_sent > 0) {
     msg = String(buffers_sent);
