@@ -1,5 +1,5 @@
 #define SERIAL_DEBUG
-//#define READ_IN_ISR
+#define READ_IN_ISR
 #ifndef ESP8266
 #define MIC_ID "001"
 #else
@@ -110,9 +110,9 @@ void  ICACHE_RAM_ATTR clock_tick() {
   }
   if (start_reading) {
     //Serial.println(reading);
-#if defined(READ_IN_ISR) 
+#if defined(READ_IN_ISR)
     reading = analogRead(MICPIN);
-#endif 
+#endif
     read_bufs[which_buf][read_buf_index] = reading;
     if (reading > 0) {
       if (abs(reading - running_avg) > trigger_threshold) {
@@ -268,7 +268,7 @@ void loop() {
   ticker_rollover = false; // reset rollover flag
   // put your main code here, to run repeatedly:
 
-  timeClient.update();
+  refreshNTP();
 
   if (buffers_sent > 0) {
     msg = String(buffers_sent);
@@ -282,7 +282,7 @@ void loop() {
   msg = "Missed ";
   msg += missed;
   msg += " readings (";
-  msg += 100*missed/CLOCK_RATE;
+  msg += 100 * missed / CLOCK_RATE;
   msg += "%)";
   LOG(msg.c_str());
   missed = 0;
@@ -477,4 +477,25 @@ void setClockFromNTP() {
   msg += " microseconds past epoch time of ";
   msg += (unsigned long) epochTime;
   LOG(msg.c_str());
+}
+
+void refreshNTP() {
+  uint32_t beforeEpoch = timeClient.getEpochTime();
+  uint32_t beforeMicros = timeClient.getEpochMicros();
+  uint32_t sysBeforeMicros = micros();
+
+  if ( timeClient.forceUpdate() ) {
+    uint32_t afterEpoch = timeClient.getEpochTime();
+    uint32_t afterMicros = timeClient.getEpochMicros();
+    uint32_t sysAfterMicros = micros();
+
+    int32_t skewMicros = 1000000 * (afterEpoch - beforeEpoch) + afterMicros - beforeMicros - (sysAfterMicros - sysBeforeMicros);
+
+    String msg = "Time skew ";
+    msg += skewMicros;
+    msg += " microseconds";
+    LOG(msg.c_str());
+  } else {
+    LOG("Time update failed");
+  }
 }
