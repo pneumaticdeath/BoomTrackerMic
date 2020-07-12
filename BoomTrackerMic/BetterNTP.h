@@ -30,7 +30,7 @@ class NTPClient {
     unsigned long _microsAtLastEpochFetch = 0; // in microseconds, to save the value that we can't return
     unsigned long _lastUpdate     = 0;      // In microseconds
     unsigned long _delaySecs      = 0;      // round trip delay of last update, in whole seconds
-    unsigned long _delayMicros    = 0;      // microseconds part of round trip delay 
+    unsigned long _delayMicros    = 0;      // microseconds part of round trip delay
     unsigned long _offsetSecs     = 0;      // last measured offset, seconds part
     unsigned long _offsetMicros   = 0;      // last measured offset, microseconds part
     bool          _offsetNeg      = false;
@@ -42,7 +42,7 @@ class NTPClient {
     void          sendNTPPacket();
     bool          isValid(byte * ntpPacket);
     void          extractTimestampAt(int at, unsigned long &secs, unsigned long &microseconds);
- 
+
   public:
     NTPClient(UDP& udp);
     NTPClient(UDP& udp, int timeOffset);
@@ -131,7 +131,7 @@ class NTPClient {
      * @ return microseconds part of round trip delay
      */
     unsigned long getDelayMicros();
-     
+
     /**
     * @return secs argument (or 0 for current date) formatted to ISO 8601
     * like `2004-02-12T15:19:21+00:00`

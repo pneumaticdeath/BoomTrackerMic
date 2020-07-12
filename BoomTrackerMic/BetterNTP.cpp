@@ -21,7 +21,7 @@
 
 #include "BetterNTP.h"
 
-// #define DEBUG_NTPClient
+#define DEBUG_NTPClient
 
 String tmpStr;
 const char *tmToStr(unsigned long secs, unsigned long microseconds, bool neg) {
@@ -286,17 +286,17 @@ bool NTPClient::forceUpdate() {
 #endif
 
   if (delayNeg) {
-    Serial.println('Got negative delay in NTPClient.. not possible');
+    Serial.println("Got negative delay in NTPClient.. not possible");
   }
   this->_delaySecs = delaySecs;
   this->_delayMicros = delayMicros;
 
-  this->_currentEpoc = t3Secs + (offsetNeg ? -1 : 1) * offsetSecs - SEVENZYYEARS;
+  this->_currentEpoc = t3Secs + ((offsetNeg ? -1 : 1) * offsetSecs) - SEVENZYYEARS;
   if (offsetNeg && offsetMicros > t3Micros) {
     this->_currentMicros = 1000000 + t3Micros - offsetSecs;
     this->_currentEpoc--; // borrow
   } else {
-    this->_currentMicros = t3Micros + (offsetNeg ? -1 : 1) * offsetMicros;
+    this->_currentMicros = t3Micros + ((offsetNeg ? -1 : 1) * offsetMicros);
     if (this->_currentMicros >= 1000000) {
       this->_currentMicros -= 1000000;
       this->_currentEpoc++; // carry
