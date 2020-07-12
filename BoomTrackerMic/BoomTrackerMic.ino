@@ -1,4 +1,4 @@
-//#define SERIAL_DEBUG
+#define SERIAL_DEBUG
 #define READ_IN_ISR
 #ifndef ESP8266
 #define MIC_ID "001"
@@ -499,6 +499,27 @@ void refreshNTP() {
     msg += skewMicros;
     msg += " microseconds";
     LOG(msg.c_str());
+
+    char microStr[8];
+    msg = "Last offset: ";
+    if (timeClient.offsetNegative()) {
+      msg += "-";
+    }
+    msg += timeClient.getOffset();
+    snprintf(microStr, 8, ".%06d", timeClient.getOffsetMicros());
+    microStr[7] = '\0';
+    msg += microStr;
+    msg += " seconds";
+    LOG(msg.c_str());
+
+    msg = "Last delay: ";
+    msg += timeClient.getDelay();
+    snprintf(microStr, 8, ".%06d", timeClient.getDelayMicros());
+    microStr[7] = '\0';
+    msg += microStr;
+    msg += " seconds";
+    LOG(msg.c_str());
+    
   } else {
     LOG("Time update failed");
   }
