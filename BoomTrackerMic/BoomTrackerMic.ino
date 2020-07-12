@@ -1,4 +1,4 @@
-#define SERIAL_DEBUG
+//#define SERIAL_DEBUG
 #define READ_IN_ISR
 #ifndef ESP8266
 #define MIC_ID "001"
@@ -13,9 +13,9 @@
 
 
 #define ERROR_LED_PIN 0
-//# define USE_DHT 1
-//# include <DHT.h>
-//# include <DHT_U.h>
+# define USE_DHT 1
+# include <DHT.h>
+# include <DHT_U.h>
 # include <ESP8266WiFi.h>
 
 #else // assume Feather M0 WiFi
@@ -93,7 +93,7 @@ volatile int16_t buffer_to_send = -1;
 uint16_t buffers_sent = 0;
 
 #if defined(USE_DHT)
-# define DHTPIN 5
+# define DHTPIN 13
 DHT dht(DHTPIN, DHT11);
 #endif
 
@@ -304,7 +304,7 @@ void loop() {
 #if defined(USE_DHT)
   msg = "DHT Temp: ";
   msg += dht.readTemperature();
-  msg += "C Humidity: ");
+  msg += "C Humidity: ";
   msg += dht.readHumidity();
   msg += "%";
   LOG(msg.c_str());
