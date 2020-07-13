@@ -297,7 +297,7 @@ bool NTPClient::forceUpdate() {
     this->_currentEpoc--; // borrow
   } else {
     this->_currentMicros = t3Micros + ((offsetNeg ? -1 : 1) * offsetMicros);
-    if (this->_currentMicros >= 1000000) {
+    while (this->_currentMicros >= 1000000) {
       this->_currentMicros -= 1000000;
       this->_currentEpoc++; // carry
     }

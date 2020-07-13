@@ -11,7 +11,6 @@
 # include <ESP8266_ISR_Timer.h>
 # include <ESP8266_ISR_Timer-Impl.h>
 
-
 #define ERROR_LED_PIN 0
 # define USE_DHT 1
 # include <DHT.h>
@@ -47,7 +46,7 @@ volatile uint32_t epochMicros = 0;
 ESP8266Timer ITimer;
 # define CLOCK_RATE 400
 #else
-const uint8_t clockPin = 10; // the pin receiving the clockSignal.
+const uint8_t clockPin = 10; // the pin receiving the clock signal.
 # define CLOCK_RATE 8192
 RTC_DS3231 rtc;
 #endif
@@ -89,7 +88,7 @@ float running_avg = 2048.0; //4096 full scale and average mic voltage is 1.65v o
 float trigger_threshold = 160.0;
 #endif
 volatile bool send_now = false;
-volatile int16_t buffer_to_send = -1;
+volatile bool send_buffer_flag[NUM_BUFFERS];
 uint16_t buffers_sent = 0;
 
 #if defined(USE_DHT)
@@ -110,18 +109,16 @@ void  ICACHE_RAM_ATTR clock_tick() {
     epochTime++;
   }
   if (start_reading) {
-    //Serial.println(reading);
 #if defined(READ_IN_ISR)
     reading = analogRead(MICPIN);
 #endif
     read_bufs[which_buf][read_buf_index] = reading;
     if (reading > 0) {
       if (abs(reading - running_avg) > trigger_threshold) {
-        buffer_to_send = which_buf;
+        send_buffer_flag[which_buf] = true;
       }
       reading = 0;
     } else {
-      //Serial.println("Missed");
       missed++;
     }
     read_buf_index = (read_buf_index + 1) % READ_BUF_SIZE;
@@ -269,7 +266,7 @@ void loop() {
   ticker_rollover = false; // reset rollover flag
   // put your main code here, to run repeatedly:
 
-  if (++updateCounter >= 10) {
+  if (++updateCounter >= 5) {
     refreshNTP();
     updateCounter = 0;
   }
@@ -283,12 +280,14 @@ void loop() {
 
   readMicServerResponse();
 
+#ifndef READ_IN_ISR
   msg = "Missed ";
   msg += missed;
   msg += " readings (";
   msg += 100 * missed / CLOCK_RATE;
   msg += "%)";
   LOG(msg.c_str());
+#endif
   missed = 0;
 
   msg = "Running average sound level is ";
@@ -319,12 +318,12 @@ void loop() {
 
 #ifdef SERIAL_DEBUG
   Serial.print("At ");
-  time_t t = epochTime; // Copying because you can't cast from a volatile to a const
+  time_t t = timeClient.getEpochTime();
   Serial.print(asctime(gmtime(&t)));
 #endif
 
   if (errorFlag && epochTime % 2) {
-  digitalWrite(ERROR_LED_PIN, HIGH);
+    digitalWrite(ERROR_LED_PIN, HIGH);
   } else {
     digitalWrite(ERROR_LED_PIN, LOW);
   }
@@ -381,31 +380,32 @@ void sendBuffer() {
   int rc;
   String msg_status;
 
-  if (buffer_to_send >= 0 && buffer_to_send < NUM_BUFFERS) {
-    uint16_t old_buf = buffer_to_send;
-    buffer_to_send = -1;
-    buffers_sent++;
+  for (uint16_t old_buf = 0; old_buf < NUM_BUFFERS; old_buf++ ) {
+    if (old_buf != which_buf && send_buffer_flag[old_buf]) {
+      send_buffer_flag[old_buf] = false;
+      buffers_sent++;
 
-    rc = micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT);
-    if (rc == 0) {
-      msg_status += "UNABLE TO ALLOCATE PACKET for sendBuffer()! ";
-    } else {
-      if (micServerUDP.write('M') != 1) msg_status += "Unable to write cmd! ";
-      if (micServerUDP.write(MIC_ID, 3) != 3) msg_status += "Unable to write id! ";
-      if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) msg_status += "Unable to write time! ";
-      uint32_t startEpoch = read_bufStartEpoch[old_buf];
-      uint32_t startMicros = read_bufStartMicros[old_buf];
-      if (writeTimeInfo(micServerUDP, startEpoch, startMicros) != 8) msg_status += "Unable to write start_time! ";
-      uint16_t microsPerCycle = (uint16_t) microsPerClockCycle;
-      if (micServerUDP.write((const uint8_t*) &microsPerCycle, sizeof(microsPerCycle)) != sizeof(microsPerCycle)) msg_status += "Unable to write cycle micros! ";
-      for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
-        if (micServerUDP.write((const uint8_t*) &read_bufs[old_buf][i], sizeof(uint16_t)) != sizeof(uint16_t)) msg_status += "Unable to write data! ";
+      rc = micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT);
+      if (rc == 0) {
+        msg_status += "UNABLE TO ALLOCATE PACKET for sendBuffer()! ";
+      } else {
+        if (micServerUDP.write('M') != 1) msg_status += "Unable to write cmd! ";
+        if (micServerUDP.write(MIC_ID, 3) != 3) msg_status += "Unable to write id! ";
+        if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) msg_status += "Unable to write time! ";
+        uint32_t startEpoch = read_bufStartEpoch[old_buf];
+        uint32_t startMicros = read_bufStartMicros[old_buf];
+        if (writeTimeInfo(micServerUDP, startEpoch, startMicros) != 8) msg_status += "Unable to write start_time! ";
+        uint16_t microsPerCycle = (uint16_t) microsPerClockCycle;
+        if (micServerUDP.write((const uint8_t*) &microsPerCycle, sizeof(microsPerCycle)) != sizeof(microsPerCycle)) msg_status += "Unable to write cycle micros! ";
+        for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
+          if (micServerUDP.write((const uint8_t*) &read_bufs[old_buf][i], sizeof(uint16_t)) != sizeof(uint16_t)) msg_status += "Unable to write data! ";
+        }
+        if (micServerUDP.endPacket() == 0) msg_status += "Unable to send measurement packet! ";
       }
-      if (micServerUDP.endPacket() == 0) msg_status += "Unable to send measurement packet! ";
-    }
 #if defined(ESP8266)
-    yield(); // give the chip time to send the packet
+      yield(); // give the chip time to send the packet
 #endif
+    }
   }
 
   uint16_t last_buf = (which_buf + NUM_BUFFERS - 1) % NUM_BUFFERS;
@@ -519,7 +519,7 @@ void refreshNTP() {
     msg += microStr;
     msg += " seconds";
     LOG(msg.c_str());
-    
+
   } else {
     LOG("Time update failed");
   }
