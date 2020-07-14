@@ -29,6 +29,8 @@ class NTPClient {
     unsigned long _currentMicros  = 0;      // in microseconds
     unsigned long _microsAtLastEpochFetch = 0; // in microseconds, to save the value that we can't return
     unsigned long _lastUpdate     = 0;      // In microseconds
+    signed long   _correction     = 0;      // In microseconds as measured by micros() per real second
+    signed long   _skew           = 0;      // In microseconds, the amount to skew over the first second after update
     unsigned long _delaySecs      = 0;      // round trip delay of last update, in whole seconds
     unsigned long _delayMicros    = 0;      // microseconds part of round trip delay
     unsigned long _offsetSecs     = 0;      // last measured offset, seconds part

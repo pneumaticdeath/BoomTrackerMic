@@ -211,7 +211,15 @@ bool NTPClient::forceUpdate() {
     t3Micros = micros();
   }
 
+  unsigned long previousUpdate = this->_lastUpdate;
   this->_lastUpdate = micros();
+  unsigned long deltaMicrosMeasured;
+  if (previousUpdate > this->_lastUpdate) {
+    // we've hit rollover
+    deltaMicrosMeasured = this->_lastUpdate + 1 + (4294967295UL - previousUpdate);
+  } else {
+    deltaMicrosMeasured = this->_lastUpdate - previousUpdate;
+  }
 
   unsigned long t0Secs, t0Micros;
   unsigned long t1Secs, t1Micros;
@@ -291,16 +299,48 @@ bool NTPClient::forceUpdate() {
   this->_delaySecs = delaySecs;
   this->_delayMicros = delayMicros;
 
-  this->_currentEpoc = t3Secs + ((offsetNeg ? -1 : 1) * offsetSecs) - SEVENZYYEARS;
-  if (offsetNeg && offsetMicros > t3Micros) {
-    this->_currentMicros = 1000000 + t3Micros - offsetSecs;
-    this->_currentEpoc--; // borrow
-  } else {
-    this->_currentMicros = t3Micros + ((offsetNeg ? -1 : 1) * offsetMicros);
-    while (this->_currentMicros >= 1000000) {
-      this->_currentMicros -= 1000000;
-      this->_currentEpoc++; // carry
+  if (offsetSecs > 1000) { // for offsets more then 1000 seconds we just use the server time
+    this->_currentEpoc = t2Secs - SEVENZYYEARS;
+    this->_currentMicros = t2Micros;
+#ifdef DEBUG_NTPClient
+    Serial.println("Offset huge, defaulting to server time");
+#endif
+  } else if (offsetSecs > 0 || offsetMicros >= 500000) { // for corrections of more than half a second, we just jump
+    this->_currentEpoc = t3Secs + ((offsetNeg ? -1 : 1) * offsetSecs) - SEVENZYYEARS;
+    if (offsetNeg && offsetMicros > t3Micros) {
+      this->_currentMicros = 1000000 + t3Micros - offsetSecs;
+      this->_currentEpoc--; // borrow
+    } else {
+      this->_currentMicros = t3Micros + ((offsetNeg ? -1 : 1) * offsetMicros);
+      while (this->_currentMicros >= 1000000) {
+        this->_currentMicros -= 1000000;
+        this->_currentEpoc++; // carry
+      }
     }
+#ifdef DEBUG_NTPClient
+    Serial.println("Offset too large, so jumping");
+#endif
+  } else {
+    // assume offsetSecs is zero in this section.
+    this->_currentEpoc = t3Secs - SEVENZYYEARS;
+    this->_currentMicros = t3Micros;
+    this->_skew = (offsetNeg ? -1 : 1) * offsetMicros;
+    // What I actually want in the next line is correction = (4*correction + skew/deltaSeconds)/5
+    // so that new correction is 4/5 the old correction and 1/5 the skew spread out over the number of seconds
+    // so that the correction will be somewhat stable, but will trend toward eliminationg the skew.
+    signed long spreadSkew = this->_skew / ((signed long) deltaMicrosMeasured / 1000000);
+    this->_correction = (4 * this->_correction + spreadSkew) / 5 ;
+#ifdef DEBUG_NTPClient
+    Serial.print("skew = ");
+    Serial.print(this->_skew);
+    Serial.println(" microseconds");
+    Serial.print("spreadSkew = ");
+    Serial.print(spreadSkew);
+    Serial.println(" microseconds/second");
+    Serial.print("correction factor = ");
+    Serial.print(this->_correction);
+    Serial.println(" microseconds/second");
+#endif
   }
   return true;
 }
@@ -330,12 +370,19 @@ bool NTPClient::update() {
 
 unsigned long NTPClient::getEpochTime() {
   unsigned long nowMicros = micros();
-  unsigned long deltaMicros = this->_currentMicros;
+  unsigned long deltaMicros = 0;
   if (nowMicros < this->_lastUpdate) {
     deltaMicros += nowMicros + 1 + (4294967295UL - this->_lastUpdate);
   } else {
     deltaMicros +=  nowMicros - this->_lastUpdate;
   }
+  // Now we need to skew and/or correct
+  if ( deltaMicros < 1000000 ) {
+    deltaMicros += (signed long) (((float) this->_skew)*deltaMicros/1000000.0);
+  } else {
+    deltaMicros += this->_skew + (signed long) (((float) this->_correction)*(deltaMicros-1000000.0)/1000000.0);
+  }
+  deltaMicros += this->_currentMicros;
   this->_microsAtLastEpochFetch = deltaMicros % 1000000;
   unsigned long returnVal = this->_timeOffset + // User offset
                             this->_currentEpoc + // Epoch returned by the NTP server
