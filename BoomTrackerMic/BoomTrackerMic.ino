@@ -133,12 +133,16 @@ void  ICACHE_RAM_ATTR clock_tick() {
 }
 
 bool errorFlag = false;
+uint32_t errorTimeout = 0;
 
 void LOG_ERROR(const char *message) {
   String errmsg = "ERROR ";
   errmsg += message;
   LOG(errmsg.c_str());
   errorFlag = true;
+  if (errorTimeout < 86400) {
+    errorTimeout += 600; // 10 more minutes of flashing
+  }
 }
 
 void LOG(const char *message) {
@@ -324,6 +328,11 @@ void loop() {
 
   if (errorFlag && epochTime % 2) {
     digitalWrite(ERROR_LED_PIN, HIGH);
+    if (errorTimeout > 0) {
+      errorTimeout -= 2;
+    } else {
+      errorFlag = false;
+    }
   } else {
     digitalWrite(ERROR_LED_PIN, LOW);
   }
@@ -521,6 +530,6 @@ void refreshNTP() {
     LOG(msg.c_str());
 
   } else {
-    LOG("Time update failed");
+    LOG_ERROR("Time update failed");
   }
 }
