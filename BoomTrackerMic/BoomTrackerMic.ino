@@ -89,7 +89,7 @@ uint16_t updateCounter = 0;
 #endif
 
 
-#define NUM_BUFFERS 2
+#define NUM_BUFFERS 4
 #define READ_BUF_SIZE 256
 volatile bool start_reading = false;
 volatile uint16_t read_bufs[NUM_BUFFERS][READ_BUF_SIZE];
@@ -110,7 +110,7 @@ float running_avg = 350.0; // 1024 full scale, and average voltage from mic is 0
 float trigger_threshold = 30;
 #else
 float running_avg = 2048.0; //4096 full scale and average mic voltage is 1.65v out of 3.3v
-float trigger_threshold = 160.0;
+float trigger_threshold = 250.0;
 #endif
 volatile bool send_now = false;
 volatile bool send_buffer_flag[NUM_BUFFERS];
@@ -352,7 +352,7 @@ void loop() {
 #ifdef SERIAL_DEBUG
   Serial.print("At ");
   time_t t = timeClient.getEpochTime();
-  Serial.print(asctime(gmtime(&t)));
+  Serial.println(asctime(gmtime(&t)));
 #endif
 
   if (errorFlag && epochTime % 2) {
@@ -448,7 +448,7 @@ void sendBuffer() {
 
   uint16_t last_buf = (which_buf + NUM_BUFFERS - 1) % NUM_BUFFERS;
   running_avg = (9 * running_avg + bufferAverage(last_buf)) / 10.0;
-  trigger_threshold = (29 * trigger_threshold + 15 * bufferRMS(last_buf)) / 30.0; // should average out to 15x RMS value, but flowly
+  trigger_threshold = (29 * trigger_threshold + 25 * bufferRMS(last_buf)) / 30.0; // should average out to 25x RMS value, but slowly
   readMicServerResponse();
   if (msg_status.length() != 0) LOG_ERROR(msg_status.c_str());
 }
