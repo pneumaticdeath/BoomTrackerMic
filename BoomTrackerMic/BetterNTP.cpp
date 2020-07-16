@@ -21,7 +21,7 @@
 
 #include "BetterNTP.h"
 
-#define DEBUG_NTPClient
+//#define DEBUG_NTPClient
 
 String tmpStr;
 const char *tmToStr(unsigned long secs, unsigned long microseconds, bool neg) {
