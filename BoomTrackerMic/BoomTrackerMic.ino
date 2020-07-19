@@ -1,11 +1,11 @@
-#define SERIAL_DEBUG
-#define READ_IN_ISR
+//#define SERIAL_DEBUG
 #if defined(ESP8266)
 # define MIC_ID "002"
 #elif defined(ESP32)
 # define MIC_ID "003"
 #else
 # define MIC_ID "001"
+//# define MIC_ID "004"
 #endif
 
 #if defined(ESP8266)
@@ -15,8 +15,7 @@
 
 #define ERROR_LED_PIN 0
 # define USE_DHT 1
-# include <DHT.h>
-# include <DHT_U.h>
+# define DHT_PIN 13
 # include <ESP8266WiFi.h>
 
 
@@ -31,20 +30,28 @@
 
 # include <SPI.h>
 # include <WiFi101.h>
-# include "RTClib.h"
-# define USE_RTC 1
+//# include "RTClib.h"
+//# define USE_RTC 1
+# define USE_DHT 1
+# define DHT_PIN 11
 # define USE_M0_INTERNAL_TIMER
 # define ERROR_LED_PIN 13
 
 # if defined(USE_M0_INTERNAL_TIMER)
 /*
- * Taken from https://gist.github.com/jdneo/43be30d85080b175cb5aed3500d3f989
- */
+   Taken from https://gist.github.com/jdneo/43be30d85080b175cb5aed3500d3f989
+*/
 
 void startTimer(int frequencyHz);
 void setTimerFrequency(int frequencyHz);
 void TC3_Handler();
 # endif
+#endif
+
+#if defined(USE_DHT)
+# include <DHT.h>
+# include <DHT_U.h>
+DHT dht(DHT_PIN, DHT11);
 #endif
 
 #include <WiFiUdp.h>
@@ -69,7 +76,6 @@ ESP8266Timer ITimer;
 // TODO
 #elif defined(USE_M0_INTERNAL_TIMER)
 # define CLOCK_RATE 10000
-RTC_DS3231 rtc;
 #else
 const uint8_t clockPin = 10; // the pin receiving the clock signal.
 # define CLOCK_RATE 8192
@@ -90,13 +96,14 @@ uint16_t updateCounter = 0;
 
 
 #define NUM_BUFFERS 4
-#define READ_BUF_SIZE 256
+#define READ_BUF_SIZE 512
 volatile bool start_reading = false;
 volatile uint16_t read_bufs[NUM_BUFFERS][READ_BUF_SIZE];
 volatile uint16_t which_buf = 0;
 volatile uint16_t read_buf_index = 0;
 volatile uint32_t read_bufStartEpoch[NUM_BUFFERS];
 volatile uint32_t read_bufStartMicros[NUM_BUFFERS];
+volatile uint16_t read_bufMicrosPerCycle[NUM_BUFFERS];
 volatile uint16_t reading = 0;
 volatile uint16_t missed = 0;
 
@@ -106,20 +113,18 @@ IPAddress micServerIP = IPAddress(192, 168, 86, 9);
 WiFiUDP micServerUDP;
 bool needReinit = true;
 #if defined(ESP8266)
+#define TRIGGER_RATIO 20
 float running_avg = 350.0; // 1024 full scale, and average voltage from mic is 0.35v out of 1v
-float trigger_threshold = 30;
+float trigger_threshold = 1.5 * TRIGGER_RATIO;
 #else
+#define TRIGGER_RATIO 25
 float running_avg = 2048.0; //4096 full scale and average mic voltage is 1.65v out of 3.3v
-float trigger_threshold = 250.0;
+float trigger_threshold = 10.0 * TRIGGER_RATIO;
 #endif
 volatile bool send_now = false;
 volatile bool send_buffer_flag[NUM_BUFFERS];
 uint16_t buffers_sent = 0;
 
-#if defined(USE_DHT)
-# define DHTPIN 13
-DHT dht(DHTPIN, DHT11);
-#endif
 
 #if !defined(ESP8266)
 # define ICACHE_RAM_ATTR
@@ -134,9 +139,7 @@ void  ICACHE_RAM_ATTR clock_tick() {
     epochTime++;
   }
   if (start_reading) {
-#if defined(READ_IN_ISR)
     reading = analogRead(MICPIN);
-#endif
     read_bufs[which_buf][read_buf_index] = reading;
     if (reading > 0) {
       if (abs(reading - running_avg) > trigger_threshold) {
@@ -148,11 +151,17 @@ void  ICACHE_RAM_ATTR clock_tick() {
     }
     read_buf_index = (read_buf_index + 1) % READ_BUF_SIZE;
     if (read_buf_index == 0) {
+      uint32_t newEpoch = timeClient.getEpochTime();
+      uint32_t newMicros = timeClient.getEpochMicros();
+      uint32_t deltaMicros = (newEpoch-read_bufStartEpoch[which_buf])*1000000 + (newMicros-read_bufStartMicros[which_buf]);
+      //Serial.printf("deltaMicros = %ul\n",deltaMicros);
+      read_bufMicrosPerCycle[which_buf] = deltaMicros/READ_BUF_SIZE;
+      //Serial.printf("PerCycle = %ud\n",read_bufMicrosPerCycle[which_buf]);
       send_now = true;
       which_buf = (which_buf + 1) % NUM_BUFFERS;
       // Reset the buffer times
-      read_bufStartEpoch[which_buf] = timeClient.getEpochTime();
-      read_bufStartMicros[which_buf] = timeClient.getEpochMicros();
+      read_bufStartEpoch[which_buf] = newEpoch;
+      read_bufStartMicros[which_buf] = newMicros;
     }
   }
 }
@@ -258,13 +267,13 @@ void setup() {
   //}
   initializeRtcFromNtp();
 
-# if defined(USE_M0_INTERNAL_TIMER)
-  startTimer(CLOCK_RATE);
-# else
   pinMode(clockPin, INPUT_PULLUP);
   rtc.writeSqwPinMode(DS3231_SquareWave8kHz);
   attachInterrupt(digitalPinToInterrupt(clockPin), clock_tick, FALLING);
-# endif
+#endif
+
+#if defined(USE_M0_INTERNAL_TIMER)
+  startTimer(CLOCK_RATE);
 #endif
 
 #if defined(ESP8266)
@@ -277,6 +286,9 @@ void setup() {
   micServerUDP.begin(MIC_UDP_PORT);
   registerMicServer();
   LOG("Starting up");
+  // First buffer doesn't have it's start time set yet.
+  read_bufStartEpoch[which_buf] = timeClient.getEpochTime();
+  read_bufStartMicros[which_buf] = timeClient.getEpochMicros();
   start_reading = true;
 }
 
@@ -284,11 +296,7 @@ void loop() {
   String msg;
   while (!ticker_rollover) {
     while (ticker_ticked == 0) {
-#if !defined(READ_IN_ISR)
-      reading = analogRead(MICPIN);
-#else
       delayMicroseconds(10);
-#endif
     }
     ticker_ticked = 0;
     if (send_now) {
@@ -300,8 +308,8 @@ void loop() {
   // put your main code here, to run repeatedly:
 
   if (++updateCounter >= 5) {
-    refreshNTP();
     updateCounter = 0;
+    refreshNTP();
   }
 
   if (buffers_sent > 0) {
@@ -433,7 +441,7 @@ void sendBuffer() {
         uint32_t startEpoch = read_bufStartEpoch[old_buf];
         uint32_t startMicros = read_bufStartMicros[old_buf];
         if (writeTimeInfo(micServerUDP, startEpoch, startMicros) != 8) msg_status += "Unable to write start_time! ";
-        uint16_t microsPerCycle = (uint16_t) microsPerClockCycle;
+        uint16_t microsPerCycle = read_bufMicrosPerCycle[old_buf];
         if (micServerUDP.write((const uint8_t*) &microsPerCycle, sizeof(microsPerCycle)) != sizeof(microsPerCycle)) msg_status += "Unable to write cycle micros! ";
         for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
           if (micServerUDP.write((const uint8_t*) &read_bufs[old_buf][i], sizeof(uint16_t)) != sizeof(uint16_t)) msg_status += "Unable to write data! ";
@@ -448,7 +456,7 @@ void sendBuffer() {
 
   uint16_t last_buf = (which_buf + NUM_BUFFERS - 1) % NUM_BUFFERS;
   running_avg = (9 * running_avg + bufferAverage(last_buf)) / 10.0;
-  trigger_threshold = (29 * trigger_threshold + 25 * bufferRMS(last_buf)) / 30.0; // should average out to 25x RMS value, but slowly
+  trigger_threshold = (29 * trigger_threshold + TRIGGER_RATIO * bufferRMS(last_buf)) / 30.0;
   readMicServerResponse();
   if (msg_status.length() != 0) LOG_ERROR(msg_status.c_str());
 }

@@ -302,11 +302,12 @@ bool NTPClient::forceUpdate() {
   if (offsetSecs > 1000) { // for offsets more then 1000 seconds we just use the server time
     this->_currentEpoc = t2Secs - SEVENZYYEARS;
     this->_currentMicros = t2Micros;
+    this->_skew = 0;
 #ifdef DEBUG_NTPClient
     Serial.println("Offset huge, defaulting to server time");
 #endif
   } else if (offsetSecs > 0 || offsetMicros >= 500000) { // for corrections of more than half a second, we just jump
-    this->_currentEpoc = t3Secs + ((offsetNeg ? -1 : 1) * offsetSecs) - SEVENZYYEARS;
+    this->_currentEpoc = t3Secs + ((signed long) ((offsetNeg ? -1 : 1) * offsetSecs)) - SEVENZYYEARS;
     if (offsetNeg && offsetMicros > t3Micros) {
       this->_currentMicros = 1000000 + t3Micros - offsetSecs;
       this->_currentEpoc--; // borrow
@@ -317,25 +318,32 @@ bool NTPClient::forceUpdate() {
         this->_currentEpoc++; // carry
       }
     }
+    this->_skew = 0;
 #ifdef DEBUG_NTPClient
     Serial.println("Offset too large, so jumping");
+    Serial.print("New epoch time is ");
+    Serial.println(tmToStr(this->_currentEpoc, this->_currentMicros, false));
 #endif
   } else {
     // assume offsetSecs is zero in this section.
+    unsigned long realDelta = ((t3Secs - SEVENZYYEARS)-this->_currentEpoc)*1000000 + ((offsetNeg?-1:1)*offsetMicros) + t3Micros-this->_currentMicros;
+    unsigned long newCorrection;
+    newCorrection = (unsigned long) ((float) deltaMicrosMeasured)*1000000.0/((float) realDelta);
+    this->_correction = (9*this->_correction + newCorrection) / 10;
     this->_currentEpoc = t3Secs - SEVENZYYEARS;
     this->_currentMicros = t3Micros;
     this->_skew = (offsetNeg ? -1 : 1) * offsetMicros;
-    // What I actually want in the next line is correction = (4*correction + skew/deltaSeconds)/5
-    // so that new correction is 4/5 the old correction and 1/5 the skew spread out over the number of seconds
-    // so that the correction will be somewhat stable, but will trend toward eliminationg the skew.
-    signed long spreadSkew = this->_skew / ((signed long) deltaMicrosMeasured / 1000000);
-    this->_correction = (4 * this->_correction + spreadSkew) / 5 ;
+    // Now we need to calculate how many real microseconds occured since last update
 #ifdef DEBUG_NTPClient
     Serial.print("skew = ");
     Serial.print(this->_skew);
     Serial.println(" microseconds");
-    Serial.print("spreadSkew = ");
-    Serial.print(spreadSkew);
+    Serial.print("deltaMicrosMeasured = ");
+    Serial.println(deltaMicrosMeasured);
+    Serial.print("realDeltaMicros = ");
+    Serial.println(realDelta);
+    Serial.print("newCorrection = ");
+    Serial.print(newCorrection);
     Serial.println(" microseconds/second");
     Serial.print("correction factor = ");
     Serial.print(this->_correction);
@@ -377,10 +385,12 @@ unsigned long NTPClient::getEpochTime() {
     deltaMicros +=  nowMicros - this->_lastUpdate;
   }
   // Now we need to skew and/or correct
-  if ( deltaMicros < 1000000 ) {
-    deltaMicros += (signed long) (((float) this->_skew)*deltaMicros/1000000.0);
+  if ( deltaMicros < 1000000L ) {
+    signed long partialSkew = (signed long) (((float) this->_skew)*deltaMicros/1000000.0);
+    deltaMicros += partialSkew;
   } else {
-    deltaMicros += this->_skew + (signed long) (((float) this->_correction)*(deltaMicros-1000000.0)/1000000.0);
+    unsigned long corr = (unsigned long) ((deltaMicros-1000000.0)*1000000.0/((float) this->_correction));
+    deltaMicros = (1000000L+this->_skew) + corr;
   }
   deltaMicros += this->_currentMicros;
   this->_microsAtLastEpochFetch = deltaMicros % 1000000;
