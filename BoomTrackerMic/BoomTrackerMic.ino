@@ -321,15 +321,15 @@ void loop() {
 
   readMicServerResponse();
 
-#ifndef READ_IN_ISR
-  msg = "Missed ";
-  msg += missed;
-  msg += " readings (";
-  msg += 100 * missed / CLOCK_RATE;
-  msg += "%)";
-  LOG(msg.c_str());
-#endif
-  missed = 0;
+  if ( missed > 0 ) {
+    msg = "Missed ";
+    msg += missed;
+    msg += " readings (";
+    msg += 100 * missed / CLOCK_RATE;
+    msg += "%)";
+    LOG(msg.c_str());
+    missed = 0;
+  }
 
   msg = "Running average sound level is ";
   msg += running_avg;
