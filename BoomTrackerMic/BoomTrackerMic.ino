@@ -13,11 +13,10 @@
 # include <ESP8266_ISR_Timer.h>
 # include <ESP8266_ISR_Timer-Impl.h>
 
-#define ERROR_LED_PIN 0
+# define ERROR_LED_PIN 0
 # define USE_DHT 1
 # define DHT_PIN 13
 # include <ESP8266WiFi.h>
-
 
 #elif defined(ESP32)
 //???
@@ -26,12 +25,14 @@
 
 #include <ESP32TimerInterrupt.h>
 
+ESP32Timer ITimer(0);
+
+# define ERROR_LED_PIN 13
+
 #else // assume Feather M0 WiFi
 
 # include <SPI.h>
 # include <WiFi101.h>
-//# include "RTClib.h"
-//# define USE_RTC 1
 # define USE_DHT 1
 # define DHT_PIN 11
 # define USE_M0_INTERNAL_TIMER
@@ -73,13 +74,9 @@ volatile uint32_t epochMicros = 0;
 ESP8266Timer ITimer;
 # define CLOCK_RATE 400
 #elif defined(ESP32)
-// TODO
+# define CLOCK_RATE 100
 #elif defined(USE_M0_INTERNAL_TIMER)
 # define CLOCK_RATE 10000
-#else
-const uint8_t clockPin = 10; // the pin receiving the clock signal.
-# define CLOCK_RATE 8192
-RTC_DS3231 rtc;
 #endif
 
 const float microsPerClockCycle = 1000000.0 / CLOCK_RATE;
@@ -117,7 +114,7 @@ bool needReinit = true;
 float running_avg = 350.0; // 1024 full scale, and average voltage from mic is 0.35v out of 1v
 float trigger_threshold = 1.5 * TRIGGER_RATIO;
 #else
-#define TRIGGER_RATIO 25
+#define TRIGGER_RATIO 20
 float running_avg = 2048.0; //4096 full scale and average mic voltage is 1.65v out of 3.3v
 float trigger_threshold = 10.0 * TRIGGER_RATIO;
 #endif
@@ -126,11 +123,15 @@ volatile bool send_buffer_flag[NUM_BUFFERS];
 uint16_t buffers_sent = 0;
 
 
-#if !defined(ESP8266)
-# define ICACHE_RAM_ATTR
+#if defined(ESP8266)
+# define ISR_ATTR ICACHE_RAM_ATTR
+#elif defined(ESP32)
+# define ISR_ATTR IRAM_ATTR
+#else 
+# define ISR_ATTR
 #endif
 
-void  ICACHE_RAM_ATTR clock_tick() {
+void  ISR_ATTR clock_tick() {
   ticker++;
   ticker_ticked++;
   if (ticker >= CLOCK_RATE) {
@@ -188,10 +189,10 @@ void LOG(const char *message) {
     return;
   }
   micServerUDP.write('L');
-  micServerUDP.write(MIC_ID, (size_t) 3);
+  micServerUDP.write((byte *) MIC_ID, (size_t) 3);
   writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros());
   size_t len = strlen(message);
-  micServerUDP.write(message, len);
+  micServerUDP.write((byte *) message, len);
   if (micServerUDP.endPacket() == 0) Serial.println("Unable to send log message");
 #if defined(ESP8266)
   yield();
@@ -205,10 +206,9 @@ void setup() {
   while (!Serial);
 #endif
 
-#if !defined(ESP8266)
+#if !defined(ESP8266) && !defined(ESP32)
   //Configure pins for Adafruit ATWINC1500 Feather
   WiFi.setPins(8, 7, 4, 2);
-#endif
 
   // Check for the presence of the shield.  Really only applies to
   // Feather M0 boards, but will work for the Huzzah as well.
@@ -217,6 +217,7 @@ void setup() {
     // don't continue:
     while (true);
   }
+#endif
 
 #if defined(ESP8266)
   WiFi.mode(WIFI_STA);
@@ -252,39 +253,20 @@ void setup() {
 
   setClockFromNTP();
 
-#if defined(USE_RTC)
-  if (! rtc.begin()) {
-    LOG("Can't find RTC");
-    Serial.flush();
-    abort();
-  }
-
-  // If the RTC isn't initialized or has lost power, we need to initialize it.
-  // Replace this with NTP code once we've got it working.
-  //if (rtc.lostPower()) {
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  //initializeRtcFromNtp();
-  //}
-  initializeRtcFromNtp();
-
-  pinMode(clockPin, INPUT_PULLUP);
-  rtc.writeSqwPinMode(DS3231_SquareWave8kHz);
-  attachInterrupt(digitalPinToInterrupt(clockPin), clock_tick, FALLING);
-#endif
+  micServerUDP.begin(MIC_UDP_PORT);
+  registerMicServer();
 
 #if defined(USE_M0_INTERNAL_TIMER)
   startTimer(CLOCK_RATE);
 #endif
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
   if (ITimer.attachInterruptInterval((uint32_t) microsPerClockCycle, clock_tick))
     LOG((String("Starting  ITimer OK, millis() = ") + String(millis())).c_str());
   else
     LOG("Can't set ITimer. Select another freq. or interval");
 #endif
 
-  micServerUDP.begin(MIC_UDP_PORT);
-  registerMicServer();
   LOG("Starting up");
   // First buffer doesn't have it's start time set yet.
   read_bufStartEpoch[which_buf] = timeClient.getEpochTime();
@@ -350,13 +332,6 @@ void loop() {
   LOG(msg.c_str());
 #endif
 
-#if defined(USE_RTC)
-  msg = "Temperature is ";
-  msg += rtc.getTemperature();
-  msg += " C";
-  LOG(msg.c_str());
-#endif
-
 #ifdef SERIAL_DEBUG
   Serial.print("At ");
   time_t t = timeClient.getEpochTime();
@@ -376,25 +351,6 @@ void loop() {
 
   if (needReinit) registerMicServer();
 }
-
-#if defined(USE_RTC)
-void initializeRtcFromNtp() {
-  timeClient.update();
-
-  epochTime = timeClient.getEpochTime();
-  unsigned long epochMicros = timeClient.getEpochMicros();
-  // Set up ticker so it rolls over at the top of the second.
-  // Do this before we call rtc.adjust(...) because that could take a while.
-  ticker = (uint16_t) (epochMicros / microsPerClockCycle);
-
-  const time_t t = epochTime;
-  struct tm *now = gmtime(&t);
-
-  Serial.print("Initializing RTC with time ");
-  Serial.print(asctime(now));
-  rtc.adjust(DateTime(now->tm_year + 1900, now->tm_mon + 1, now->tm_mday, now->tm_hour, now->tm_min, now->tm_sec));
-}
-#endif
 
 float bufferAverage(uint8_t bufNum) {
   float sum = 0.0;
@@ -436,7 +392,7 @@ void sendBuffer() {
         msg_status += "UNABLE TO ALLOCATE PACKET for sendBuffer()! ";
       } else {
         if (micServerUDP.write('M') != 1) msg_status += "Unable to write cmd! ";
-        if (micServerUDP.write(MIC_ID, 3) != 3) msg_status += "Unable to write id! ";
+        if (micServerUDP.write((byte *) MIC_ID, 3) != 3) msg_status += "Unable to write id! ";
         if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) msg_status += "Unable to write time! ";
         uint32_t startEpoch = read_bufStartEpoch[old_buf];
         uint32_t startMicros = read_bufStartMicros[old_buf];
@@ -497,13 +453,11 @@ void registerMicServer() {
     return;
   }
   if (micServerUDP.write('R') != 1) LOG_ERROR("Unable to write cmd");
-  if (micServerUDP.write(MIC_ID, 3) != 3) LOG_ERROR("Unable to write id");
+  if (micServerUDP.write((byte *) MIC_ID, 3) != 3) LOG_ERROR("Unable to write id");
   if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
   uint16_t temp;
 #if defined(USE_DHT)
   temp = (uint16_t) ((dht.readTemperature() + 273.15) * 10);
-#elif defined(USE_RTC)
-  temp = (uint16_t) ((rtc.getTemperature() + 273.15) * 10);
 #else
   temp = 2981; // 298.1 K is 25 C.. which is a reasonable default
 #endif
