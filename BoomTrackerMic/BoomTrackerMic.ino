@@ -33,20 +33,11 @@ ESP32Timer ITimer(0);
 
 # include <SPI.h>
 # include <WiFi101.h>
-# define USE_DHT 1
+//# define USE_DHT 1
 # define DHT_PIN 11
 # define USE_M0_INTERNAL_TIMER
 # define ERROR_LED_PIN 13
 
-# if defined(USE_M0_INTERNAL_TIMER)
-/*
-   Taken from https://gist.github.com/jdneo/43be30d85080b175cb5aed3500d3f989
-*/
-
-void startTimer(int frequencyHz);
-void setTimerFrequency(int frequencyHz);
-void TC3_Handler();
-# endif
 #endif
 
 #if defined(USE_DHT)
@@ -76,7 +67,7 @@ ESP8266Timer ITimer;
 #elif defined(ESP32)
 # define CLOCK_RATE 100
 #elif defined(USE_M0_INTERNAL_TIMER)
-# define CLOCK_RATE 10000
+# define CLOCK_RATE 20000
 #endif
 
 const float microsPerClockCycle = 1000000.0 / CLOCK_RATE;
@@ -122,12 +113,21 @@ volatile bool send_now = false;
 volatile bool send_buffer_flag[NUM_BUFFERS];
 uint16_t buffers_sent = 0;
 
+#if defined(USE_M0_INTERNAL_TIMER)
+/*
+   Taken from https://gist.github.com/jdneo/43be30d85080b175cb5aed3500d3f989
+*/
+
+void startTimer(int frequencyHz);
+void setTimerFrequency(int frequencyHz);
+void TC3_Handler();
+#endif
 
 #if defined(ESP8266)
 # define ISR_ATTR ICACHE_RAM_ATTR
 #elif defined(ESP32)
 # define ISR_ATTR IRAM_ATTR
-#else 
+#else
 # define ISR_ATTR
 #endif
 
@@ -154,9 +154,9 @@ void  ISR_ATTR clock_tick() {
     if (read_buf_index == 0) {
       uint32_t newEpoch = timeClient.getEpochTime();
       uint32_t newMicros = timeClient.getEpochMicros();
-      uint32_t deltaMicros = (newEpoch-read_bufStartEpoch[which_buf])*1000000 + (newMicros-read_bufStartMicros[which_buf]);
+      uint32_t deltaMicros = (newEpoch - read_bufStartEpoch[which_buf]) * 1000000 + (newMicros - read_bufStartMicros[which_buf]);
       //Serial.printf("deltaMicros = %ul\n",deltaMicros);
-      read_bufMicrosPerCycle[which_buf] = deltaMicros/READ_BUF_SIZE;
+      read_bufMicrosPerCycle[which_buf] = deltaMicros / READ_BUF_SIZE;
       //Serial.printf("PerCycle = %ud\n",read_bufMicrosPerCycle[which_buf]);
       send_now = true;
       which_buf = (which_buf + 1) % NUM_BUFFERS;
@@ -459,7 +459,7 @@ void registerMicServer() {
 #if defined(USE_DHT)
   temp = (uint16_t) ((dht.readTemperature() + 273.15) * 10);
 #else
-  temp = 2981; // 298.1 K is 25 C.. which is a reasonable default
+  temp = 1; // 0.1 K is clearly not reasonable, and the server should ignore it.
 #endif
   if (micServerUDP.write((const uint8_t *) &temp, sizeof(temp)) != sizeof(temp)) LOG_ERROR("Unable to write temp");
   if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
