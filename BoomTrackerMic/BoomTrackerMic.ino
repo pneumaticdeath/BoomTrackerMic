@@ -4,7 +4,9 @@
 #elif defined(ESP32)
 # define MIC_ID "003"
 #else
-# define MIC_ID "001"
+//# define MIC_ID "001"
+# define MIC_ID "002"
+//# define MIC_ID "003"
 //# define MIC_ID "004"
 #endif
 
@@ -83,7 +85,7 @@ uint16_t updateCounter = 0;
 #endif
 
 
-#define NUM_BUFFERS 4
+#define NUM_BUFFERS 6
 #define READ_BUF_SIZE 512
 volatile bool start_reading = false;
 volatile uint16_t read_bufs[NUM_BUFFERS][READ_BUF_SIZE];
@@ -91,7 +93,7 @@ volatile uint16_t which_buf = 0;
 volatile uint16_t read_buf_index = 0;
 volatile uint32_t read_bufStartEpoch[NUM_BUFFERS];
 volatile uint32_t read_bufStartMicros[NUM_BUFFERS];
-volatile uint16_t read_bufMicrosPerCycle[NUM_BUFFERS];
+volatile uint16_t read_bufHundredthsOfMicrosPerCycle[NUM_BUFFERS];
 volatile uint16_t reading = 0;
 volatile uint16_t missed = 0;
 
@@ -105,12 +107,14 @@ bool needReinit = true;
 float running_avg = 350.0; // 1024 full scale, and average voltage from mic is 0.35v out of 1v
 float trigger_threshold = 1.5 * TRIGGER_RATIO;
 #else
-#define TRIGGER_RATIO 20
+#define TRIGGER_RATIO 25
 float running_avg = 2048.0; //4096 full scale and average mic voltage is 1.65v out of 3.3v
 float trigger_threshold = 10.0 * TRIGGER_RATIO;
 #endif
 volatile bool send_now = false;
+volatile bool send_next_buffer = false;
 volatile bool send_buffer_flag[NUM_BUFFERS];
+volatile bool buffer_sent_flag[NUM_BUFFERS];
 uint16_t buffers_sent = 0;
 
 #if defined(USE_M0_INTERNAL_TIMER)
@@ -143,26 +147,34 @@ void  ISR_ATTR clock_tick() {
     reading = analogRead(MICPIN);
     read_bufs[which_buf][read_buf_index] = reading;
     if (reading > 0) {
-      if (abs(reading - running_avg) > trigger_threshold) {
+      if ((reading - running_avg) > trigger_threshold) {
         send_buffer_flag[which_buf] = true;
+        uint16_t last_buf = (which_buf + NUM_BUFFERS - 1) % NUM_BUFFERS;
+        if (!buffer_sent_flag[last_buf]) {
+          send_buffer_flag[last_buf] = true; // if we haven't already sent the last buffer, do so now.
+        }
+        send_next_buffer = true;  // send the next buffer too
       }
       reading = 0;
     } else {
       missed++;
     }
     read_buf_index = (read_buf_index + 1) % READ_BUF_SIZE;
-    if (read_buf_index == 0) {
+    if (read_buf_index == 0) {  // Buffer finalization and initialization
       uint32_t newEpoch = timeClient.getEpochTime();
       uint32_t newMicros = timeClient.getEpochMicros();
       uint32_t deltaMicros = (newEpoch - read_bufStartEpoch[which_buf]) * 1000000 + (newMicros - read_bufStartMicros[which_buf]);
-      //Serial.printf("deltaMicros = %ul\n",deltaMicros);
-      read_bufMicrosPerCycle[which_buf] = deltaMicros / READ_BUF_SIZE;
-      //Serial.printf("PerCycle = %ud\n",read_bufMicrosPerCycle[which_buf]);
+      //Serial.printf("deltaMicros = %u\n",deltaMicros);
+      read_bufHundredthsOfMicrosPerCycle[which_buf] = 100 * deltaMicros / READ_BUF_SIZE;
+      //Serial.printf("PerCycle = %ud\n",read_bufHundredthsOfMicrosPerCycle[which_buf]);
       send_now = true;
       which_buf = (which_buf + 1) % NUM_BUFFERS;
-      // Reset the buffer times
+      // Reset the buffer
       read_bufStartEpoch[which_buf] = newEpoch;
       read_bufStartMicros[which_buf] = newMicros;
+      send_buffer_flag[which_buf] = send_next_buffer;  // send the next buffer if we've flagged it already.
+      buffer_sent_flag[which_buf] = false;  // hasn't been sent yet either.
+      send_next_buffer = false;
     }
   }
 }
@@ -385,6 +397,7 @@ void sendBuffer() {
   for (uint16_t old_buf = 0; old_buf < NUM_BUFFERS; old_buf++ ) {
     if (old_buf != which_buf && send_buffer_flag[old_buf]) {
       send_buffer_flag[old_buf] = false;
+      buffer_sent_flag[old_buf] = true;
       buffers_sent++;
 
       rc = micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT);
@@ -397,8 +410,8 @@ void sendBuffer() {
         uint32_t startEpoch = read_bufStartEpoch[old_buf];
         uint32_t startMicros = read_bufStartMicros[old_buf];
         if (writeTimeInfo(micServerUDP, startEpoch, startMicros) != 8) msg_status += "Unable to write start_time! ";
-        uint16_t microsPerCycle = read_bufMicrosPerCycle[old_buf];
-        if (micServerUDP.write((const uint8_t*) &microsPerCycle, sizeof(microsPerCycle)) != sizeof(microsPerCycle)) msg_status += "Unable to write cycle micros! ";
+        uint16_t hundredthsOfMicrosPerCycle = read_bufHundredthsOfMicrosPerCycle[old_buf];
+        if (micServerUDP.write((const uint8_t*) &hundredthsOfMicrosPerCycle, sizeof(hundredthsOfMicrosPerCycle)) != sizeof(hundredthsOfMicrosPerCycle)) msg_status += "Unable to write interval time! ";
         for (uint16_t i = 0; i < READ_BUF_SIZE; i++) {
           if (micServerUDP.write((const uint8_t*) &read_bufs[old_buf][i], sizeof(uint16_t)) != sizeof(uint16_t)) msg_status += "Unable to write data! ";
         }
