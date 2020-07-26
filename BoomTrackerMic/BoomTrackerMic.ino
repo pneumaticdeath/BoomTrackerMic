@@ -5,8 +5,8 @@
 # define MIC_ID "003"
 #else
 //# define MIC_ID "001"
-# define MIC_ID "002"
-//# define MIC_ID "003"
+//# define MIC_ID "002"
+# define MIC_ID "003"
 //# define MIC_ID "004"
 #endif
 
@@ -396,8 +396,8 @@ void sendBuffer() {
 
   for (uint16_t old_buf = 0; old_buf < NUM_BUFFERS; old_buf++ ) {
     if (old_buf != which_buf && send_buffer_flag[old_buf]) {
-      send_buffer_flag[old_buf] = false;
       buffer_sent_flag[old_buf] = true;
+      send_buffer_flag[old_buf] = false;
       buffers_sent++;
 
       rc = micServerUDP.beginPacket(micServerIP, MIC_UDP_PORT);
