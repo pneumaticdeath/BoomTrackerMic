@@ -84,6 +84,7 @@ uint16_t updateCounter = 0;
 # define MICPIN A2
 #endif
 
+#define BATTERY_PIN A7
 
 #define NUM_BUFFERS 6
 #define READ_BUF_SIZE 512
@@ -96,6 +97,7 @@ volatile uint32_t read_bufStartMicros[NUM_BUFFERS];
 volatile uint16_t read_bufHundredthsOfMicrosPerCycle[NUM_BUFFERS];
 volatile uint16_t reading = 0;
 volatile uint16_t missed = 0;
+volatile uint16_t battery = 0;
 
 
 IPAddress micServerIP = IPAddress(192, 168, 86, 9);
@@ -175,6 +177,9 @@ void  ISR_ATTR clock_tick() {
       send_buffer_flag[which_buf] = send_next_buffer;  // send the next buffer if we've flagged it already.
       buffer_sent_flag[which_buf] = false;  // hasn't been sent yet either.
       send_next_buffer = false;
+
+      // refresh battery reading
+      battery = analogRead(BATTERY_PIN);
     }
   }
 }
@@ -262,6 +267,7 @@ void setup() {
 #endif
 
   pinMode(ERROR_LED_PIN, OUTPUT);
+  pinMode(BATTERY_PIN, INPUT);
 
   setClockFromNTP();
 
@@ -343,6 +349,11 @@ void loop() {
   msg += "%";
   LOG(msg.c_str());
 #endif
+
+  msg = "Battery: ";
+  msg += battery*2*3.3/4096;
+  msg += "V";
+  LOG(msg.c_str());
 
 #ifdef SERIAL_DEBUG
   Serial.print("At ");
@@ -468,13 +479,7 @@ void registerMicServer() {
   if (micServerUDP.write('R') != 1) LOG_ERROR("Unable to write cmd");
   if (micServerUDP.write((byte *) MIC_ID, 3) != 3) LOG_ERROR("Unable to write id");
   if (writeTimeInfo(micServerUDP, timeClient.getEpochTime(), timeClient.getEpochMicros()) != 8) LOG_ERROR("Unable to write time");
-  uint16_t temp;
-#if defined(USE_DHT)
-  temp = (uint16_t) ((dht.readTemperature() + 273.15) * 10);
-#else
-  temp = 1; // 0.1 K is clearly not reasonable, and the server should ignore it.
-#endif
-  if (micServerUDP.write((const uint8_t *) &temp, sizeof(temp)) != sizeof(temp)) LOG_ERROR("Unable to write temp");
+  if (micServerUDP.write((const uint8_t *) &battery, sizeof(battery)) != sizeof(battery)) LOG_ERROR("Unable to write battery status");
   if (micServerUDP.endPacket() == 0) LOG_ERROR("Unable to send packet");
 #if defined(ESP8266)
   yield(); // give the chip time to send the packet
@@ -550,8 +555,8 @@ void setTimerFrequency(int frequencyHz) {
   // to prevent any jitter or disconnect when changing the compare value.
   TC->COUNT.reg = map(TC->COUNT.reg, 0, TC->CC[0].reg, 0, compareValue);
   TC->CC[0].reg = compareValue;
-  Serial.println(TC->COUNT.reg);
-  Serial.println(TC->CC[0].reg);
+  //Serial.println(TC->COUNT.reg);
+  //Serial.println(TC->CC[0].reg);
   while (TC->STATUS.bit.SYNCBUSY == 1);
 }
 
