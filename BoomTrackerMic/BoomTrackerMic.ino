@@ -5,8 +5,8 @@
 # define MIC_ID "003"
 #else
 //# define MIC_ID "001"
-//# define MIC_ID "002"
-# define MIC_ID "003"
+# define MIC_ID "002"
+//# define MIC_ID "003"
 //# define MIC_ID "004"
 #endif
 
@@ -36,7 +36,7 @@ ESP32Timer ITimer(0);
 # include <SPI.h>
 # include <WiFi101.h>
 //# define USE_DHT 1
-# define DHT_PIN 11
+//# define DHT_PIN 11
 # define USE_M0_INTERNAL_TIMER
 # define ERROR_LED_PIN 13
 
@@ -105,18 +105,19 @@ IPAddress micServerIP = IPAddress(192, 168, 86, 9);
 WiFiUDP micServerUDP;
 bool needReinit = true;
 #if defined(ESP8266)
-#define TRIGGER_RATIO 20
+# define INITIAL_TRIGGER_RATIO 20
 float running_avg = 350.0; // 1024 full scale, and average voltage from mic is 0.35v out of 1v
-float trigger_threshold = 1.5 * TRIGGER_RATIO;
+float trigger_threshold = 1.5 * INITIAL_TRIGGER_RATIO;
 #else
-#define TRIGGER_RATIO 25
+# define INITIAL_TRIGGER_RATIO 15
 float running_avg = 2048.0; //4096 full scale and average mic voltage is 1.65v out of 3.3v
-float trigger_threshold = 10.0 * TRIGGER_RATIO;
+float trigger_threshold = 10.0 * INITIAL_TRIGGER_RATIO;
 #endif
 volatile bool send_now = false;
 volatile bool send_next_buffer = false;
 volatile bool send_buffer_flag[NUM_BUFFERS];
 volatile bool buffer_sent_flag[NUM_BUFFERS];
+uint16_t trigger_ratio = INITIAL_TRIGGER_RATIO;
 uint16_t buffers_sent = 0;
 
 #if defined(USE_M0_INTERNAL_TIMER)
@@ -436,7 +437,7 @@ void sendBuffer() {
 
   uint16_t last_buf = (which_buf + NUM_BUFFERS - 1) % NUM_BUFFERS;
   running_avg = (9 * running_avg + bufferAverage(last_buf)) / 10.0;
-  trigger_threshold = (29 * trigger_threshold + TRIGGER_RATIO * bufferRMS(last_buf)) / 30.0;
+  trigger_threshold = (29 * trigger_threshold + trigger_ratio * bufferRMS(last_buf)) / 30.0;
   readMicServerResponse();
   if (msg_status.length() != 0) LOG_ERROR(msg_status.c_str());
 }
