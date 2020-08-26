@@ -1,39 +1,16 @@
 //#define SERIAL_DEBUG
-#if defined(ESP8266)
 # define DEV_ID "T01"
 //# define DEV_ID "T02"
-#elif defined(ESP32)
-# define DEV_ID "T03"
-#else
-//# define MIC_ID "001"
-//# define MIC_ID "002"
-//# define MIC_ID "003"
-//# define MIC_ID "004"
-#endif
 
-#if defined(ESP8266)
-# define USE_DHT 1
-# define DHT_PIN 13
-# include <ESP8266WiFi.h>
+#include <ESP8266WiFi.h>
 
-#elif defined(ESP32)
-//???
-#include <WiFi.h>
-#include <AsyncUDP.h>
-# define ERROR_LED_PIN 13
-
-#else // assume Feather M0 WiFi
-// ???
-#endif
-
-#if defined(USE_DHT)
-# include <DHT.h>
-# include <DHT_U.h>
+#include <DHT.h>
+#include <DHT_U.h>
+#define DHT_PIN 13
 DHT dht(DHT_PIN, DHT11);
 
 float temp = 25.0;
 float humidity = 10.0;
-#endif
 
 #include <WiFiUdp.h>
 #include "BetterNTP.h"
@@ -42,7 +19,6 @@ float humidity = 10.0;
 const char ssid[] = WIFI_SSID;
 const char pass[] = WIFI_PASS;
 
-//IPAddress ntpServer = IPAddress(192, 168, 86, 9);  // DON'T DO THIS... it causes NTPClient to do very strange things
 const char *ntpServer = "192.168.86.9";
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, ntpServer);
@@ -65,23 +41,19 @@ void setup() {
   while (!Serial);
 #endif  
 
-#if defined(USE_DHT)
   Serial.println("Initializing temp sensor");
   dht.begin();
   readDHT();
-#endif
 
   readBattery();
 
   // Now we wake up the Wifi and send our message
-#if defined(ESP8266)
   WiFi.forceSleepWake();
   delay(1);
   WiFi.persistent( false );
 
   
   WiFi.mode(WIFI_STA);
-#endif
   Serial.print("Initializing WIFI to talk to SSID ");
   Serial.print(ssid);
   WiFi.begin(ssid, pass);
@@ -102,11 +74,12 @@ void setup() {
   serverUDP.begin(UDP_PORT);
   refreshNTP();
   registerServer();
+  delay( 1 );
 
   WiFi.disconnect( true );
   delay( 1 );
 
-  ESP.deepSleep(60e6, WAKE_RF_DISABLED);
+  ESP.deepSleep(50e6, WAKE_RF_DISABLED);
 }
 
 void loop() {
@@ -125,7 +98,7 @@ void readDHT() {
 void readBattery() {
   battery = analogRead(BATTERY_PIN);
   Serial.print("Battery: ");
-  Serial.print(battery*4*1.0/1024);
+  Serial.print(battery*10*1.0/1024);
   Serial.println("V");
 }
 
@@ -153,9 +126,7 @@ void registerServer() {
   uint16_t humid_int = (uint16_t) (humidity*10.0);
   if (serverUDP.write((const uint8_t *) &humid_int, sizeof(humid_int)) != sizeof(humid_int)) Serial.println("Unable to write humidity");
   if (serverUDP.endPacket() == 0) Serial.println("Unable to send packet");
-#if defined(ESP8266)
   yield(); // give the chip time to send the packet
-#endif
 
   Serial.println("Reinit finished");
 }
